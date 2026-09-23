@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3dAFL</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+
+      <div id="hud">
+        <div id="scoreboard">
+          <div class="team home">
+            <span class="team-name" id="home-name">Home</span>
+            <span class="team-score" id="home-score">0.0.0</span>
+          </div>
+          <div class="clock">
+            <span id="quarter">Q1</span>
+            <span id="time">20:00</span>
+          </div>
+          <div class="team away">
+            <span class="team-score" id="away-score">0.0.0</span>
+            <span class="team-name" id="away-name">Away</span>
+          </div>
+        </div>
+
+        <div id="commentary-feed"></div>
+
+        <div id="controls">
+          <button id="start-btn">Start Match</button>
+          <select id="ladder-toggle-placeholder" style="display:none"></select>
+        </div>
+
+        <div id="ladder-panel">
+          <h3>Ladder</h3>
+          <table id="ladder-table"></table>
+        </div>
+
+        <div id="fulltime-banner" class="hidden">
+          <div id="fulltime-text"></div>
+          <button id="next-match-btn">Watch Next Match</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
