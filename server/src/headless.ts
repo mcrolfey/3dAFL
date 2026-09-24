@@ -1,9 +1,11 @@
 import { loadTeams, loadSeason, saveTeams, saveSeason } from "./persistence/store.js";
 import { nextScheduledMatch, recordMatchResult, sortedLadder } from "./progression/season.js";
 import { applyProgressionToTeam } from "./progression/progression.js";
-import { aggregateMatchStats } from "./progression/stats.js";
+import { aggregateMatchStats, aggregateTeamStats } from "./progression/stats.js";
 import { createDecisionEngine } from "./jev/index.js";
 import { runMatch } from "./matchRunner.js";
+import { UNPACED_SPEED } from "./sim/engine.js";
+import { formatStatsTable } from "./report.js";
 import { points } from "@3dafl/shared";
 
 async function main() {
@@ -13,7 +15,7 @@ async function main() {
 
   const scheduled = nextScheduledMatch(season);
   if (!scheduled) {
-    console.log("Season complete — no unplayed matches remain. Run `npm run headless -w server -- --reset` after deleting server/data/*.json to start a new season.");
+    console.log("Season complete — no unplayed matches remain. Delete server/data/*.json to start a new season.");
     return;
   }
 
@@ -22,22 +24,32 @@ async function main() {
 
   console.log(`\n=== Round ${scheduled.round}: ${home.name} vs ${away.name} (decision engine: ${decisionEngine.name}) ===\n`);
 
-  // Runs unpaced (near-instant) for fast debugging — the live server paces plays for real-time viewing instead.
-  const { result, events } = await runMatch(
-    scheduled.id,
+  // Runs unpaced (as fast as possible) for quick checks — the live server paces play for real-time viewing instead.
+  const { result, events } = await runMatch({
+    matchId: scheduled.id,
     home,
     away,
     decisionEngine,
-    async (ce) => {
-      if (ce.text) {
-        console.log(`[Q${ce.clock.quarter} ${Math.floor(ce.clock.secondsRemaining / 60)}:${String(ce.clock.secondsRemaining % 60).padStart(2, "0")}] ${ce.text}`);
-      }
+    simSpeed: UNPACED_SPEED,
+    onEvent: (ce) => {
+      if (!ce.text) return;
+      const secs = Math.floor(ce.clock.secondsRemaining);
+      console.log(`[Q${ce.clock.quarter} ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}] ${ce.text}`);
     },
-    1_000_000,
+  });
+
+  console.log(
+    `\nFinal: ${home.name} ${result.homeScore.goals}.${result.homeScore.behinds} (${points(result.homeScore)}) — ${away.name} ${result.awayScore.goals}.${result.awayScore.behinds} (${points(result.awayScore)})\n`,
   );
 
-  console.log(`\nFinal: ${home.name} ${result.homeScore.goals}.${result.homeScore.behinds} (${points(result.homeScore)}) — ${away.name} ${result.awayScore.goals}.${result.awayScore.behinds} (${points(result.awayScore)})`);
-  console.log(`Total events: ${events.length}`);
+  const teamOfPlayer = new Map([...home.players, ...away.players].map((p) => [p.id, p.teamId]));
+  const teamStats = aggregateTeamStats(events, teamOfPlayer);
+  console.log(
+    formatStatsTable([
+      { label: home.name, stats: teamStats.get(home.id)! },
+      { label: away.name, stats: teamStats.get(away.id)! },
+    ]),
+  );
 
   const matchStats = aggregateMatchStats(events);
   applyProgressionToTeam(home, matchStats);

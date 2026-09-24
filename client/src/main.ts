@@ -1,10 +1,11 @@
 import * as THREE from "three";
-import type { CommentatedEvent, MatchClock, MatchEvent, Team, TeamSummary } from "@3dafl/shared";
+import type { CommentatedEvent, TeamSummary } from "@3dafl/shared";
 import { fetchState, startMatch } from "./net/api.js";
 import { LiveMatchSocket } from "./net/wsClient.js";
+import { FrameBuffer } from "./net/frameBuffer.js";
 import { buildField, HALF_LENGTH } from "./scene/field.js";
 import { PlayersManager } from "./scene/players.js";
-import { BallController } from "./scene/ball.js";
+import { BallView } from "./scene/ball.js";
 import { BroadcastCamera } from "./camera/broadcastCamera.js";
 import { Hud } from "./hud/hud.js";
 
@@ -16,10 +17,9 @@ renderer.shadowMap.enabled = true;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x87ceeb);
-scene.fog = new THREE.Fog(0x87ceeb, 150, 400);
+scene.fog = new THREE.Fog(0x87ceeb, 180, 450);
 scene.add(buildField());
 
-const ambient = new THREE.AmbientLight(0xffffff, 0.6);
 const sun = new THREE.DirectionalLight(0xffffff, 1.1);
 sun.position.set(60, 100, -40);
 sun.castShadow = true;
@@ -29,127 +29,102 @@ sun.shadow.camera.top = 90;
 sun.shadow.camera.bottom = -90;
 sun.shadow.camera.far = 300;
 sun.shadow.mapSize.set(2048, 2048);
-scene.add(ambient, sun);
+scene.add(new THREE.AmbientLight(0xffffff, 0.6), sun);
 
 const broadcastCamera = new BroadcastCamera(window.innerWidth / window.innerHeight);
-const ball = new BallController(scene);
+const ball = new BallView(scene);
 const hud = new Hud();
+const frames = new FrameBuffer();
+
+interface RosterEntry {
+  number: number;
+  name: string;
+  team: string;
+  color: string;
+}
 
 let players: PlayersManager | null = null;
+let roster: RosterEntry[] = [];
+let teamNames = { home: "Home", away: "Away" };
 let currentMatchId: string | null = null;
-let teams: Team[] = [];
-let simSpeed = 4;
+let nextMatchTimer: number | null = null;
 
-// The server only sends a clock update once per play; we count down smoothly in between
-// (scaled by simSpeed) instead of letting the on-screen clock jump straight to each new value.
-let clockBaseline: MatchClock = { quarter: 1, secondsRemaining: 20 * 60 };
-let clockBaselineAt = performance.now();
-
-function setClockBaseline(c: MatchClock) {
-  clockBaseline = c;
-  clockBaselineAt = performance.now();
-}
-
-function toTeamSummary(team: Team): TeamSummary {
-  return {
-    id: team.id,
-    name: team.name,
-    color: team.color,
-    players: team.players.map((p, i) => ({ id: p.id, name: p.name, position: p.position, number: i + 1 })),
-  };
-}
-
-function fieldToWorld(x: number, z: number) {
-  return new THREE.Vector3(x, 0, z);
+function rosterFrom(home: TeamSummary, away: TeamSummary): RosterEntry[] {
+  return [home, away].flatMap((team) => team.players.map((p) => ({ number: p.number, name: p.name, team: team.name, color: team.color })));
 }
 
 async function refreshLadder() {
   const state = await fetchState();
-  teams = state.teams;
-  simSpeed = state.simSpeed;
   hud.setLadder(state.ladder, state.teams);
   return state;
 }
 
-function handleEvent(ce: CommentatedEvent) {
-  const event: MatchEvent = ce.event;
+function setUpMatch(matchId: string, ce: CommentatedEvent) {
+  if (ce.event.kind !== "matchStart") return;
+  const { home, away, frameInterval, simSpeed } = ce.event;
+  currentMatchId = matchId;
+  teamNames = { home: home.name, away: away.name };
+  roster = rosterFrom(home, away);
+  players?.dispose();
+  players = new PlayersManager(scene, home, away);
+  frames.reset();
+  frames.configure(frameInterval, simSpeed);
+  hud.setTeams(home.name, away.name);
+  hud.clearCommentary();
+  hud.hideFullTime();
+  hud.setStartEnabled(false, "Match in progress...");
+}
 
+function handleEvent(ce: CommentatedEvent) {
   hud.updateScore(ce.homeScore, ce.awayScore);
-  setClockBaseline(ce.clock);
   if (ce.text) hud.pushCommentary(ce.text);
 
-  if (!players) return;
-
-  switch (event.kind) {
-    case "positions": {
-      players.setPositions(event.positions);
-      players.setBallCarrier(event.ballCarrierId);
-      if (!ball.isFlying()) ball.snapTo(fieldToWorld(event.ballPos.x, event.ballPos.y));
-      break;
-    }
-    case "disposal": {
-      const from = fieldToWorld(event.from.x, event.from.y);
-      const to = fieldToWorld(event.to.x, event.to.y);
-      ball.kickTo(from, to, event.type === "handball" ? 0.4 : 1.1, event.type === "handball" ? 1.5 : 6);
-      break;
-    }
-    case "shotAtGoal": {
-      const goalX = event.from.x >= 0 ? HALF_LENGTH : -HALF_LENGTH;
-      if (event.result === "goal") broadcastCamera.triggerGoalReplay(goalX);
-      break;
-    }
-    case "fullTime": {
-      const home = teams.find((t) => t.id === currentMatchHomeId);
-      const away = teams.find((t) => t.id === currentMatchAwayId);
-      hud.showFullTime(home?.name ?? "Home", away?.name ?? "Away", event.homeScore, event.awayScore);
-      break;
-    }
+  const event = ce.event;
+  if (event.kind === "shotAtGoal" && event.result === "goal") {
+    broadcastCamera.triggerGoalReplay(ball.mesh.position.x >= 0 ? HALF_LENGTH : -HALF_LENGTH);
+  }
+  if (event.kind === "fullTime") {
+    hud.showFullTime(teamNames.home, teamNames.away, event.homeScore, event.awayScore);
   }
 }
 
-let currentMatchHomeId = "";
-let currentMatchAwayId = "";
-
 async function beginMatch() {
-  hud.hideFullTime();
-  hud.clearCommentary();
-  hud.setStartEnabled(false, "Match in progress...");
-
-  const started = await startMatch();
-  if ("error" in started) {
-    hud.setStartEnabled(true, "Start Match");
-    return;
+  if (nextMatchTimer !== null) {
+    clearTimeout(nextMatchTimer);
+    nextMatchTimer = null;
   }
-
-  currentMatchId = started.matchId;
-  currentMatchHomeId = started.homeTeamId;
-  currentMatchAwayId = started.awayTeamId;
-
-  const home = teams.find((t) => t.id === started.homeTeamId)!;
-  const away = teams.find((t) => t.id === started.awayTeamId)!;
-  hud.setTeams(toTeamSummary(home), toTeamSummary(away));
-
-  players?.dispose();
-  players = new PlayersManager(scene, toTeamSummary(home), toTeamSummary(away));
-  setClockBaseline({ quarter: 1, secondsRemaining: 20 * 60 });
+  hud.hideFullTime();
+  hud.setStartEnabled(false, "Starting...");
+  const started = await startMatch();
+  // A 409 means a match is already running; its events are on their way over the socket.
+  if ("error" in started && !started.error.includes("already in progress")) {
+    hud.setStartEnabled(false, "Season complete");
+  }
 }
 
 const socket = new LiveMatchSocket();
 socket.onMessage((msg) => {
-  if (msg.type === "commentatedEvent" && msg.matchId === currentMatchId) {
-    handleEvent(msg.payload);
-  }
-  if (msg.type === "matchEnded" && msg.matchId === currentMatchId) {
-    hud.setStartEnabled(false, "Match complete");
-    refreshLadder().then((state) => {
-      const nextAvailable = state.season.schedule.some((m) => !m.played);
-      if (nextAvailable) {
-        setTimeout(() => beginMatch(), 6000);
+  switch (msg.type) {
+    case "commentatedEvent":
+      if (msg.payload.event.kind === "matchStart") setUpMatch(msg.matchId, msg.payload);
+      if (msg.matchId === currentMatchId) handleEvent(msg.payload);
+      break;
+    case "frame":
+      if (msg.matchId === currentMatchId) frames.push(msg.frame);
+      break;
+    case "matchEnded":
+      if (msg.matchId !== currentMatchId) break;
+      hud.setCarrier(null);
+      refreshLadder().then((state) => {
+        if (!state.season.schedule.some((m) => !m.played)) {
+          hud.setStartEnabled(false, "Season complete");
+          return;
+        }
+        // Keep the season rolling on its own; the button lets you skip the wait.
         hud.setStartEnabled(true, "Watch Next Match Now");
-      } else {
-        hud.setStartEnabled(false, "Season complete");
-      }
-    });
+        nextMatchTimer = window.setTimeout(() => beginMatch(), 8000);
+      });
+      break;
   }
 });
 socket.connect();
@@ -166,17 +141,20 @@ const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
   const delta = Math.min(0.1, clock.getDelta());
-  players?.update(delta);
-  ball.update(delta);
+
+  const sample = frames.sample(performance.now());
+  if (sample && players) {
+    players.update(sample.players, sample.frame.carrierIndex, delta);
+    ball.update(sample.ball[0], sample.ball[1], sample.ball[2], delta);
+    hud.updateClock(sample.frame.clock, sample.frame.clockRunning);
+    hud.setCarrier(roster[sample.frame.carrierIndex] ?? null);
+  }
+
   broadcastCamera.update(delta, ball.mesh.position);
   renderer.render(scene, broadcastCamera.camera);
-
-  const elapsedSim = ((performance.now() - clockBaselineAt) / 1000) * simSpeed;
-  const displaySeconds = Math.max(0, clockBaseline.secondsRemaining - elapsedSim);
-  hud.updateClock({ quarter: clockBaseline.quarter, secondsRemaining: Math.round(displaySeconds) });
 }
 animate();
 
 refreshLadder().then(() => {
-  hud.setStartEnabled(true, "Start Match");
+  if (!currentMatchId) hud.setStartEnabled(true, "Start Match");
 });

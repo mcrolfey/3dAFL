@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "headless": "tsx src/headless.ts",
+    "calibrate": "tsx src/calibrate.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js"
   },

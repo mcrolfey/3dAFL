@@ -1,5 +1,6 @@
 import type { ContestContext, DecisionEngine, DisposalContext, ExecutionContext } from "@3dafl/shared";
 import { jevEnabled } from "../config.js";
+import { JevError } from "./client.js";
 import { JevDecisionEngine, LocalHeuristicDecisionEngine } from "./decisionEngine.js";
 
 /** Wraps Jev calls with a per-call fallback to the local heuristic engine on error/rate-limit. */
@@ -7,38 +8,40 @@ class FallbackDecisionEngine implements DecisionEngine {
   name = "jev+fallback";
   private jev = new JevDecisionEngine();
   private local = new LocalHeuristicDecisionEngine();
+  private authFailed = false;
 
-  async decideDisposal(ctx: DisposalContext) {
+  private async attempt<T>(method: string, jevCall: () => Promise<T>, localCall: () => Promise<T>): Promise<T> {
+    if (this.authFailed) return localCall();
     try {
-      return await this.jev.decideDisposal(ctx);
+      return await jevCall();
     } catch (err) {
-      logFallback("decideDisposal", err);
-      return this.local.decideDisposal(ctx);
+      if (err instanceof JevError && err.status === 401) {
+        // A bad key won't fix itself mid-session; stop paying a network round-trip per decision.
+        this.authFailed = true;
+        console.warn("[jev] API key rejected (401) — using the local heuristic engine for the rest of this session.");
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[jev] ${method} failed, falling back to local heuristic: ${message}`);
+      }
+      return localCall();
     }
   }
 
-  async decideContest(ctx: ContestContext) {
-    try {
-      return await this.jev.decideContest(ctx);
-    } catch (err) {
-      logFallback("decideContest", err);
-      return this.local.decideContest(ctx);
-    }
+  decideDisposal(ctx: DisposalContext) {
+    return this.attempt("decideDisposal", () => this.jev.decideDisposal(ctx), () => this.local.decideDisposal(ctx));
   }
 
-  async decideExecutionQuality(ctx: ExecutionContext) {
-    try {
-      return await this.jev.decideExecutionQuality(ctx);
-    } catch (err) {
-      logFallback("decideExecutionQuality", err);
-      return this.local.decideExecutionQuality(ctx);
-    }
+  decideContest(ctx: ContestContext) {
+    return this.attempt("decideContest", () => this.jev.decideContest(ctx), () => this.local.decideContest(ctx));
   }
-}
 
-function logFallback(method: string, err: unknown) {
-  const message = err instanceof Error ? err.message : String(err);
-  console.warn(`[jev] ${method} failed, falling back to local heuristic: ${message}`);
+  decideExecutionQuality(ctx: ExecutionContext) {
+    return this.attempt(
+      "decideExecutionQuality",
+      () => this.jev.decideExecutionQuality(ctx),
+      () => this.local.decideExecutionQuality(ctx),
+    );
+  }
 }
 
 export function createDecisionEngine(): DecisionEngine {

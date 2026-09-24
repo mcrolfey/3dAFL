@@ -1,9 +1,10 @@
-import type { CommentatedEvent } from "@3dafl/shared";
+import type { CommentatedEvent, MatchFrame, MatchResult } from "@3dafl/shared";
 
 export type IncomingMessage =
   | { type: "commentatedEvent"; matchId: string; payload: CommentatedEvent }
+  | { type: "frame"; matchId: string; frame: MatchFrame }
   | { type: "matchStarted"; matchId: string; homeTeamId: string; awayTeamId: string }
-  | { type: "matchEnded"; matchId: string; result: unknown };
+  | { type: "matchEnded"; matchId: string; result: MatchResult };
 
 export class LiveMatchSocket {
   private ws: WebSocket | null = null;
@@ -13,12 +14,13 @@ export class LiveMatchSocket {
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     this.ws = new WebSocket(`${protocol}://${location.host}/ws`);
     this.ws.onmessage = (ev) => {
+      let msg: IncomingMessage;
       try {
-        const msg = JSON.parse(ev.data) as IncomingMessage;
-        for (const handler of this.handlers) handler(msg);
+        msg = JSON.parse(ev.data) as IncomingMessage;
       } catch {
-        // ignore malformed frames
+        return;
       }
+      for (const handler of this.handlers) handler(msg);
     };
     this.ws.onclose = () => {
       setTimeout(() => this.connect(), 1500);

@@ -11,6 +11,7 @@
     "build:shared": "npm run build -w shared",
     "dev": "npm run build:shared && concurrently -k -n server,client -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
     "headless": "npm run build:shared && npm run headless -w server",
+    "calibrate": "npm run build:shared && npm run calibrate -w server --",
     "build": "npm run build:shared && npm run build -w server && npm run build -w client"
   },
   "devDependencies": {

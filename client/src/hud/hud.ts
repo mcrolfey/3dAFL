@@ -1,13 +1,12 @@
-import type { LadderEntry, MatchClock, ScoreLine, Team, TeamSummary } from "@3dafl/shared";
+import type { LadderEntry, MatchClock, ScoreLine, Team } from "@3dafl/shared";
 
 function scoreText(score: ScoreLine): string {
   return `${score.goals}.${score.behinds}.${score.goals * 6 + score.behinds}`;
 }
 
 function clockText(clock: MatchClock): string {
-  const m = Math.floor(clock.secondsRemaining / 60);
-  const s = clock.secondsRemaining % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
+  const secs = Math.floor(clock.secondsRemaining);
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 }
 
 export class Hud {
@@ -23,10 +22,15 @@ export class Hud {
   private fulltimeBanner = document.getElementById("fulltime-banner")!;
   private fulltimeText = document.getElementById("fulltime-text")!;
   private nextMatchBtn = document.getElementById("next-match-btn") as HTMLButtonElement;
+  private carrierTag = document.getElementById("carrier-tag")!;
+  private carrierNumber = document.getElementById("carrier-number")!;
+  private carrierName = document.getElementById("carrier-name")!;
+  private carrierTeam = document.getElementById("carrier-team")!;
+  private shownCarrier = "";
 
-  setTeams(home: TeamSummary, away: TeamSummary) {
-    this.homeName.textContent = home.name;
-    this.awayName.textContent = away.name;
+  setTeams(homeName: string, awayName: string) {
+    this.homeName.textContent = homeName;
+    this.awayName.textContent = awayName;
   }
 
   updateScore(home: ScoreLine, away: ScoreLine) {
@@ -34,9 +38,23 @@ export class Hud {
     this.awayScore.textContent = scoreText(away);
   }
 
-  updateClock(clock: MatchClock) {
+  updateClock(clock: MatchClock, running: boolean) {
     this.quarterEl.textContent = `Q${clock.quarter}`;
     this.timeEl.textContent = clockText(clock);
+    this.timeEl.classList.toggle("stopped", !running);
+  }
+
+  /** TV-style lower third naming whoever has the ball. */
+  setCarrier(carrier: { number: number; name: string; team: string; color: string } | null) {
+    const key = carrier ? `${carrier.team}#${carrier.number}` : "";
+    if (key === this.shownCarrier) return;
+    this.shownCarrier = key;
+    this.carrierTag.classList.toggle("hidden", !carrier);
+    if (!carrier) return;
+    this.carrierNumber.textContent = String(carrier.number);
+    this.carrierNumber.style.background = carrier.color;
+    this.carrierName.textContent = carrier.name;
+    this.carrierTeam.textContent = carrier.team;
   }
 
   pushCommentary(text: string) {
@@ -51,7 +69,7 @@ export class Hud {
   }
 
   clearCommentary() {
-    this.feed.innerHTML = "";
+    this.feed.replaceChildren();
   }
 
   setStartEnabled(enabled: boolean, label?: string) {
@@ -80,12 +98,16 @@ export class Hud {
   }
 
   setLadder(ladder: LadderEntry[], teams: Team[]) {
-    const rows = ladder
-      .map((entry) => {
-        const team = teams.find((t) => t.id === entry.teamId);
-        return `<tr><td>${team?.name ?? "?"}</td><td>${entry.wins}-${entry.losses}-${entry.draws}</td><td>${entry.pointsFor}</td></tr>`;
-      })
-      .join("");
-    this.ladderTable.innerHTML = rows;
+    const rows = ladder.map((entry) => {
+      const team = teams.find((t) => t.id === entry.teamId);
+      const tr = document.createElement("tr");
+      for (const text of [team?.name ?? "?", `${entry.wins}-${entry.losses}-${entry.draws}`, String(entry.pointsFor)]) {
+        const td = document.createElement("td");
+        td.textContent = text;
+        tr.appendChild(td);
+      }
+      return tr;
+    });
+    this.ladderTable.replaceChildren(...rows);
   }
 }

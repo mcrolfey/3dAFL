@@ -8,17 +8,18 @@ export class BroadcastCamera {
   private mode: CameraMode = "chase";
   private modeTimer = 0;
   private goalEndX = 0;
-  private desiredPos = new THREE.Vector3(0, 38, -75);
-  private lookAt = new THREE.Vector3(0, 1, 0);
+  private readonly desiredPos = new THREE.Vector3(0, 36, -74);
+  private readonly desiredLook = new THREE.Vector3(0, 1, 0);
+  private readonly look = new THREE.Vector3(0, 1, 0);
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(50, aspect, 0.1, 500);
+    this.camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 600);
     this.camera.position.copy(this.desiredPos);
   }
 
   triggerGoalReplay(scoringEndX: number) {
     this.mode = "goalReplay";
-    this.modeTimer = 2.6;
+    this.modeTimer = 3;
     this.goalEndX = scoringEndX;
   }
 
@@ -27,19 +28,22 @@ export class BroadcastCamera {
     this.camera.updateProjectionMatrix();
   }
 
-  update(delta: number, focus: THREE.Vector3) {
+  update(delta: number, ball: THREE.Vector3) {
     if (this.mode === "goalReplay") {
       this.modeTimer -= delta;
-      const behindGoal = this.goalEndX > 0 ? this.goalEndX + 14 : this.goalEndX - 14;
-      this.desiredPos.set(behindGoal, 7, 0);
-      this.lookAt.set(this.goalEndX - Math.sign(this.goalEndX) * 10, 1.5, 0);
+      const side = Math.sign(this.goalEndX) || 1;
+      this.desiredPos.set(this.goalEndX + side * 16, 6, 4);
+      this.desiredLook.set(this.goalEndX - side * 18, 3, 0);
       if (this.modeTimer <= 0) this.mode = "chase";
     } else {
-      this.desiredPos.set(focus.x * 0.6, 38, -75);
-      this.lookAt.set(focus.x, 1, focus.z * 0.4);
+      // Main camera high on the wing: pans along the ground with the ball, pulls up a little when it's kicked high.
+      this.desiredPos.set(ball.x * 0.75, 34 + ball.y * 0.4, -74 + ball.z * 0.3);
+      this.desiredLook.set(ball.x, ball.y * 0.4, ball.z * 0.55);
     }
 
-    this.camera.position.lerp(this.desiredPos, Math.min(1, delta * 2));
-    this.camera.lookAt(this.lookAt);
+    const k = Math.min(1, delta * 2.2);
+    this.camera.position.lerp(this.desiredPos, k);
+    this.look.lerp(this.desiredLook, Math.min(1, delta * 4));
+    this.camera.lookAt(this.look);
   }
 }

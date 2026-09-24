@@ -84,24 +84,11 @@ export interface Season {
 
 // --- Match simulation ---
 
-export type MatchPhase =
-  | "CENTER_BOUNCE"
-  | "IN_PLAY"
-  | "KICK_IN"
-  | "THROW_IN"
-  | "QUARTER_BREAK"
-  | "FULL_TIME";
-
 export interface FieldPos {
-  /** meters from center; negative = toward home team's defensive goal, positive = toward away team's defensive goal */
+  /** meters from center along the ground's length; home attacks +x in odd quarters */
   x: number;
-  /** meters from center line, -65..65 */
+  /** meters from center across the ground */
   y: number;
-}
-
-export interface PlayerFieldState {
-  playerId: string;
-  pos: FieldPos;
 }
 
 export interface MatchClock {
@@ -109,35 +96,44 @@ export interface MatchClock {
   secondsRemaining: number;
 }
 
-export interface MatchState {
-  matchId: string;
-  home: Team;
-  away: Team;
-  phase: MatchPhase;
+/** A physics snapshot streamed many times per second while a match is live. */
+export interface MatchFrame {
   clock: MatchClock;
-  ballPos: FieldPos;
-  ballCarrierId: string | null;
-  homeScore: ScoreLine;
-  awayScore: ScoreLine;
-  possessionTeamId: string | null;
-  playerPositions: PlayerFieldState[];
-  finished: boolean;
+  clockRunning: boolean;
+  /** x, y, height */
+  ball: [number, number, number];
+  /** index into the matchStart roster (home players, then away players), -1 if nobody holds the ball */
+  carrierIndex: number;
+  /** flat [x0, y0, x1, y1, ...] in roster order */
+  players: number[];
 }
 
+export type StoppageType = "centerBounce" | "ballUp" | "throwIn";
+export type TackleOutcome = "holdingTheBall" | "ballUp" | "dispossessed" | "handballOut" | "broken";
+export type ShotResult = "goal" | "behind" | "miss";
+
 export type MatchEvent =
-  | { kind: "matchStart"; matchId: string; home: TeamSummary; away: TeamSummary }
-  | { kind: "centerBounce"; wonByTeamId: string; wonByPlayerId: string }
-  | { kind: "disposal"; playerId: string; teamId: string; type: "kick" | "handball"; targetPlayerId: string | null; from: FieldPos; to: FieldPos; effective: boolean }
-  | { kind: "contest"; playerId: string; opponentId: string | null; type: "tackle" | "mark" | "spoil" | "groundBall"; success: boolean }
-  | { kind: "turnover"; fromTeamId: string; toTeamId: string; reason: string }
-  | { kind: "outOfBounds"; teamId: string }
-  | { kind: "throwIn"; wonByTeamId: string; wonByPlayerId: string }
-  | { kind: "shotAtGoal"; playerId: string; teamId: string; from: FieldPos; result: "goal" | "behind" | "miss" }
+  | { kind: "matchStart"; matchId: string; home: TeamSummary; away: TeamSummary; simSpeed: number; frameInterval: number }
+  | { kind: "frame"; frame: MatchFrame }
+  | { kind: "stoppage"; type: StoppageType; at: FieldPos }
+  | { kind: "hitout"; playerId: string; teamId: string }
+  | { kind: "gather"; playerId: string; teamId: string; fromOpposition: boolean }
+  | { kind: "disposal"; playerId: string; teamId: string; type: "kick" | "handball"; intent: DisposalChoice; targetPlayerId: string | null; quality: number; from: FieldPos; to: FieldPos }
+  | { kind: "playOn"; playerId: string }
+  | { kind: "bounce"; playerId: string }
+  | { kind: "mark"; playerId: string; teamId: string; contested: boolean; intercept: boolean }
+  | { kind: "spoil"; playerId: string; opponentId: string }
+  | { kind: "droppedMark"; playerId: string }
+  | { kind: "tackle"; playerId: string; teamId: string; opponentId: string; outcome: TackleOutcome }
+  | { kind: "freeKick"; playerId: string; teamId: string; reason: string }
+  | { kind: "clearance"; playerId: string; teamId: string }
+  | { kind: "insideFifty"; playerId: string; teamId: string }
+  | { kind: "outOfBounds"; onTheFull: boolean; lastTeamId: string }
+  | { kind: "shotAtGoal"; playerId: string; teamId: string; distance: number; setShot: boolean; result: ShotResult; homeScore: ScoreLine; awayScore: ScoreLine }
+  | { kind: "rushedBehind"; teamId: string; homeScore: ScoreLine; awayScore: ScoreLine }
   | { kind: "kickIn"; teamId: string; playerId: string }
   | { kind: "quarterEnd"; quarter: 1 | 2 | 3 | 4; homeScore: ScoreLine; awayScore: ScoreLine }
-  | { kind: "fullTime"; homeScore: ScoreLine; awayScore: ScoreLine; winnerTeamId: string | null }
-  | { kind: "clockSync"; clock: MatchClock }
-  | { kind: "positions"; positions: PlayerFieldState[]; ballPos: FieldPos; ballCarrierId: string | null };
+  | { kind: "fullTime"; homeScore: ScoreLine; awayScore: ScoreLine; winnerTeamId: string | null };
 
 export interface CommentatedEvent {
   event: MatchEvent;
@@ -156,7 +152,7 @@ export interface TeamSummary {
 
 // --- Decision engine (Jev-backed or heuristic fallback) ---
 
-export type DisposalChoice = "kickShort" | "kickLong" | "handball" | "shootForGoal";
+export type DisposalChoice = "kickShort" | "kickLong" | "handball" | "shootForGoal" | "run";
 
 export interface DisposalContext {
   playerId: string;
@@ -165,7 +161,16 @@ export interface DisposalContext {
   attackingDirection: 1 | -1;
   inForward50: boolean;
   underPressure: boolean;
+  /** teammates within handball range who aren't closely checked */
   nearbyTeammateIds: string[];
+  distanceToGoal: number;
+  angleToGoalDeg: number;
+  inScoringRange: boolean;
+  /** mark or free kick: can't be tackled and may take their time */
+  protectedPossession: boolean;
+  nearestOpponentDistance: number;
+  /** open teammates further downfield within kicking range */
+  openTeammatesAhead: number;
 }
 
 export interface ContestContext {
@@ -183,7 +188,8 @@ export interface ExecutionContext {
 
 export interface DecisionEngine {
   name: string;
-  decideDisposal(ctx: DisposalContext): Promise<{ choice: DisposalChoice; targetPlayerId: string | null; confidence: number }>;
+  /** What the ball carrier does. Who they aim at is resolved spatially by the engine. */
+  decideDisposal(ctx: DisposalContext): Promise<{ choice: DisposalChoice; confidence: number }>;
   decideContest(ctx: ContestContext): Promise<{ success: boolean; confidence: number }>;
   decideExecutionQuality(ctx: ExecutionContext): Promise<{ quality: number; confidence: number }>;
 }

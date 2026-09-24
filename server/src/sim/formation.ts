@@ -1,65 +1,90 @@
-import type { FieldPos, PlayerFieldState, Team } from "@3dafl/shared";
-import { clampField, randomJitter } from "./field.js";
+import type { Player, Position } from "@3dafl/shared";
+import type { Vec2 } from "./field.js";
 
-function baseZoneX(position: string, attackingDirection: 1 | -1): number {
-  switch (position) {
-    case "DEF":
-      return attackingDirection > 0 ? -55 : 55;
-    case "FWD":
-      return attackingDirection > 0 ? 55 : -55;
-    case "RUCK":
-      return 0;
-    case "MID":
-    default:
-      return attackingDirection > 0 ? -5 : 5;
-  }
+export type Line = "back" | "centre" | "forward";
+
+/** A named on-field position, expressed for a team attacking toward +x. */
+export interface Slot {
+  name: string;
+  line: Line;
+  x: number;
+  y: number;
 }
 
-function pullFactorFor(position: string): number {
-  switch (position) {
-    case "MID":
-      return 0.55;
-    case "RUCK":
-      return 0.45;
-    default:
-      return 0.2;
-  }
-}
+// Mirrored so each back-line slot lines up with the opposition's matching forward slot.
+// All back/forward slots sit inside the 50m arcs at centre bounces (the 6-6-6 rule).
+const BACK: Slot[] = [
+  { name: "Full back", line: "back", x: -76, y: 0 },
+  { name: "Back pocket", line: "back", x: -70, y: -18 },
+  { name: "Back pocket", line: "back", x: -70, y: 18 },
+  { name: "Centre half-back", line: "back", x: -46, y: 0 },
+  { name: "Half-back flank", line: "back", x: -50, y: -24 },
+  { name: "Half-back flank", line: "back", x: -50, y: 24 },
+];
 
-export function computeFormation(
-  home: Team,
-  away: Team,
-  ballPos: FieldPos,
-  homeAttackDir: 1 | -1,
-  ballCarrierId: string | null = null,
-): PlayerFieldState[] {
-  const result: PlayerFieldState[] = [];
-  const teams: [Team, 1 | -1][] = [
-    [home, homeAttackDir],
-    [away, (homeAttackDir * -1) as 1 | -1],
-  ];
+const CENTRE: Slot[] = [
+  { name: "Ruck", line: "centre", x: -1.5, y: 0 },
+  { name: "Rover", line: "centre", x: -6, y: 6 },
+  { name: "Ruck-rover", line: "centre", x: -6, y: -6 },
+  { name: "Centre", line: "centre", x: -10, y: 0 },
+  { name: "Wing", line: "centre", x: 0, y: -42 },
+  { name: "Wing", line: "centre", x: 0, y: 42 },
+];
 
-  for (const [team, attackDir] of teams) {
-    let laneIndex = 0;
-    for (const player of team.players) {
-      if (player.id === ballCarrierId) {
-        // The player actually holding the ball is always rendered right at it, not just pulled toward it.
-        result.push({ playerId: player.id, pos: clampField({ x: ballPos.x - attackDir * 1.2, y: ballPos.y }) });
-        continue;
-      }
+const FORWARD: Slot[] = [
+  { name: "Full forward", line: "forward", x: 76, y: 0 },
+  { name: "Forward pocket", line: "forward", x: 70, y: -18 },
+  { name: "Forward pocket", line: "forward", x: 70, y: 18 },
+  { name: "Centre half-forward", line: "forward", x: 46, y: 0 },
+  { name: "Half-forward flank", line: "forward", x: 50, y: -24 },
+  { name: "Half-forward flank", line: "forward", x: 50, y: 24 },
+];
 
-      const baseX = baseZoneX(player.position, attackDir);
-      const lane = (laneIndex % 6) - 2.5;
-      laneIndex++;
-      const baseY = lane * 20;
-      const pull = pullFactorFor(player.position);
+export const ALL_SLOTS: Slot[] = [...BACK, ...CENTRE, ...FORWARD];
 
-      const x = baseX * (1 - pull) + ballPos.x * pull + randomJitter(4);
-      const y = baseY * (1 - pull) + ballPos.y * pull + randomJitter(4);
-
-      result.push({ playerId: player.id, pos: clampField({ x, y }) });
+/**
+ * Puts each player in a named position: defenders down back, the first ruck in the centre, midfielders on the ball
+ * and wings, forwards (plus the spare ruck/midfielder) up forward. Falls back gracefully for unusual lists.
+ */
+export function assignSlots(players: Player[]): Map<string, Slot> {
+  const pool = new Map<Position, Player[]>([
+    ["DEF", players.filter((p) => p.position === "DEF")],
+    ["MID", players.filter((p) => p.position === "MID")],
+    ["FWD", players.filter((p) => p.position === "FWD")],
+    ["RUCK", players.filter((p) => p.position === "RUCK")],
+  ]);
+  const take = (...prefs: Position[]): Player | undefined => {
+    for (const pos of prefs) {
+      const list = pool.get(pos)!;
+      if (list.length > 0) return list.shift();
     }
-  }
+    return undefined;
+  };
 
+  const result = new Map<string, Slot>();
+  const place = (slot: Slot, player: Player | undefined) => {
+    if (player) result.set(player.id, slot);
+  };
+
+  for (const slot of BACK) place(slot, take("DEF", "MID", "FWD", "RUCK"));
+  place(CENTRE[0], take("RUCK", "MID", "DEF", "FWD"));
+  for (const slot of CENTRE.slice(1)) place(slot, take("MID", "FWD", "DEF", "RUCK"));
+  for (const slot of FORWARD) place(slot, take("FWD", "RUCK", "MID", "DEF"));
+
+  // Anyone left over (non-standard list sizes) shares the nearest-to-centre slot rather than being dropped.
+  for (const list of pool.values()) for (const p of list) result.set(p.id, CENTRE[3]);
   return result;
+}
+
+/** World position of a slot for a team attacking in `attackDir`. y isn't flipped so opposing pockets/wings line up. */
+export function slotWorld(slot: Slot, attackDir: 1 | -1): Vec2 {
+  return { x: slot.x * attackDir, y: slot.y };
+}
+
+/** The opposition slot that plays on this one (full back ↔ full forward, wing ↔ wing, and so on). */
+export function mirrorSlotIndex(slot: Slot): number {
+  const i = ALL_SLOTS.indexOf(slot);
+  if (slot.line === "back") return 12 + i;
+  if (slot.line === "forward") return i - 12;
+  return i;
 }

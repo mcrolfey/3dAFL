@@ -24,7 +24,7 @@ const hub = new Hub(server);
 let runningMatchId: string | null = null;
 
 app.get("/api/state", (_req, res) => {
-  res.json({ teams, season, ladder: sortedLadder(season), decisionEngine: decisionEngine.name, simSpeed: config.simSpeed });
+  res.json({ teams, season, ladder: sortedLadder(season), decisionEngine: decisionEngine.name });
 });
 
 app.get("/api/season", (_req, res) => {
@@ -62,8 +62,17 @@ app.post("/api/match/start", (req, res) => {
   res.status(202).json({ matchId: scheduled.id, homeTeamId: home.id, awayTeamId: away.id });
   hub.broadcast({ type: "matchStarted", matchId: scheduled.id, homeTeamId: home.id, awayTeamId: away.id });
 
-  runMatch(scheduled.id, home, away, decisionEngine, async (commentatedEvent) => {
-    hub.broadcast({ type: "commentatedEvent", matchId: scheduled.id, payload: commentatedEvent });
+  runMatch({
+    matchId: scheduled.id,
+    home,
+    away,
+    decisionEngine,
+    onEvent: (commentatedEvent) => {
+      const message = { type: "commentatedEvent" as const, matchId: scheduled.id, payload: commentatedEvent };
+      if (commentatedEvent.event.kind === "matchStart") hub.setWelcome(message);
+      hub.broadcast(message);
+    },
+    onFrame: (frame) => hub.broadcast({ type: "frame", matchId: scheduled.id, frame }),
   })
     .then(({ result, events }) => {
       const matchStats = aggregateMatchStats(events);
@@ -79,6 +88,7 @@ app.post("/api/match/start", (req, res) => {
     })
     .finally(() => {
       runningMatchId = null;
+      hub.setWelcome(null);
     });
 });
 

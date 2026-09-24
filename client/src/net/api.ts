@@ -5,7 +5,6 @@ export interface StateResponse {
   season: Season;
   ladder: LadderEntry[];
   decisionEngine: string;
-  simSpeed: number;
 }
 
 export async function fetchState(): Promise<StateResponse> {
