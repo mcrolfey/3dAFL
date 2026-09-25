@@ -41,11 +41,12 @@ export function isInsideField(p: Vec2): boolean {
   return ellipseRadius(p) <= 1;
 }
 
-/** Pulls a point back inside the boundary, leaving `margin` meters of room. */
+/** Pulls a point back inside the boundary, leaving `margin` meters of room. Always returns a new object, never `p`. */
 export function clampInside(p: Vec2, margin = 1): Vec2 {
   const r = ellipseRadius(p);
   const limit = 1 - margin / FIELD_HALF_WIDTH;
-  if (r <= limit) return p;
+  // Returning `p` itself once aliased a stoppage spot to a player's live position, so the ball-up followed him around.
+  if (r <= limit) return { x: p.x, y: p.y };
   const s = limit / r;
   return { x: p.x * s, y: p.y * s };
 }

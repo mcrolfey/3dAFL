@@ -101,6 +101,8 @@ interface DeadPhase {
   until: number;
   targets: Map<SimPlayer, MoveTarget>;
   next: () => void;
+  /** optional per-tick work while play is stopped, e.g. returning the ball to the centre */
+  tick?: () => void;
 }
 
 type Phase = PossessionPhase | FlightPhase | LoosePhase | StoppagePhase | DeadPhase;
@@ -278,6 +280,7 @@ class MatchSim {
         break;
       case "dead":
         for (const [p, target] of ph.targets) overrides.set(p, target);
+        ph.tick?.();
         if (this.t >= ph.until) ph.next();
         break;
     }
@@ -1118,10 +1121,26 @@ class MatchSim {
   }
 
   private afterGoal() {
-    this.placeBall({ x: 0, y: 0 }, 1.2);
+    // The ball sits behind the goals during the celebration, then goes back to the centre in a long lob
+    // rather than vanishing and reappearing there.
+    const from = { x: this.ball.x, y: this.ball.y };
+    const scoredAt = this.t;
+    this.placeBall(from, 0.3);
     const targets = new Map<SimPlayer, MoveTarget>();
     for (const p of this.players) targets.set(p, { pos: slotWorld(p.slot, this.attackDir(p.team)), sprint: false });
-    this.phase = { kind: "dead", until: this.t + 14, targets, next: () => this.startCentreBounce() };
+    this.phase = {
+      kind: "dead",
+      until: this.t + 14,
+      targets,
+      next: () => this.startCentreBounce(),
+      tick: () => {
+        const tau = Math.min(1, Math.max(0, (this.t - scoredAt - 4) / 5));
+        if (tau === 0) return;
+        this.ball.x = from.x * (1 - tau);
+        this.ball.y = from.y * (1 - tau);
+        this.ball.z = 0.3 + 0.9 * tau + 4 * 14 * tau * (1 - tau);
+      },
+    };
   }
 
   private afterBehind(defendingTeam: 0 | 1) {
