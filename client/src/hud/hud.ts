@@ -19,6 +19,7 @@ export class Hud {
   private feed = document.getElementById("commentary-feed")!;
   private startBtn = document.getElementById("start-btn") as HTMLButtonElement;
   private ladderTable = document.getElementById("ladder-table")!;
+  private ladderTitle = document.getElementById("ladder-title")!;
   private fulltimeBanner = document.getElementById("fulltime-banner")!;
   private fulltimeText = document.getElementById("fulltime-text")!;
   private nextMatchBtn = document.getElementById("next-match-btn") as HTMLButtonElement;
@@ -97,7 +98,8 @@ export class Hud {
     this.fulltimeBanner.classList.add("hidden");
   }
 
-  setLadder(ladder: LadderEntry[], teams: Team[]) {
+  setLadder(ladder: LadderEntry[], teams: Team[], year: number) {
+    this.ladderTitle.textContent = `${year} Ladder`;
     const rows = ladder.map((entry) => {
       const team = teams.find((t) => t.id === entry.teamId);
       const tr = document.createElement("tr");

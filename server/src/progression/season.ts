@@ -1,8 +1,34 @@
-import type { MatchResult, ScheduledMatch, Season } from "@3dafl/shared";
+import type { MatchResult, ScheduledMatch, Season, Team } from "@3dafl/shared";
 import { points } from "@3dafl/shared";
+import { seedSeason } from "../persistence/seed.js";
 
 export function nextScheduledMatch(season: Season): ScheduledMatch | null {
   return season.schedule.find((m) => !m.played) ?? null;
+}
+
+/**
+ * Rolls over to the next year with the same lists: everyone keeps the attributes they've built up, ages a year,
+ * and starts with fresh season stats and a fresh fixture. Mutates `teams`.
+ */
+export function startNextSeason(teams: Team[], previous: Season): Season {
+  for (const team of teams) {
+    for (const player of team.players) {
+      player.age += 1;
+      player.seasonStats = { matchesPlayed: 0, goals: 0, behinds: 0, disposals: 0, tackles: 0, marks: 0 };
+    }
+  }
+
+  const season = seedSeason(teams, previous.year + 1);
+  // Swap home grounds every other year and shuffle the fixture order so seasons don't repeat.
+  if (season.year % 2 === 1) {
+    for (const m of season.schedule) [m.homeTeamId, m.awayTeamId] = [m.awayTeamId, m.homeTeamId];
+  }
+  for (let i = season.schedule.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [season.schedule[i], season.schedule[j]] = [season.schedule[j], season.schedule[i]];
+  }
+  season.schedule.forEach((m, i) => (m.round = i + 1));
+  return season;
 }
 
 export function recordMatchResult(season: Season, matchId: string, result: MatchResult): void {

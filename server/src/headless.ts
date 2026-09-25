@@ -1,5 +1,5 @@
 import { loadTeams, loadSeason, saveTeams, saveSeason } from "./persistence/store.js";
-import { nextScheduledMatch, recordMatchResult, sortedLadder } from "./progression/season.js";
+import { nextScheduledMatch, recordMatchResult, sortedLadder, startNextSeason } from "./progression/season.js";
 import { applyProgressionToTeam } from "./progression/progression.js";
 import { aggregateMatchStats, aggregateTeamStats } from "./progression/stats.js";
 import { createDecisionEngine } from "./jev/index.js";
@@ -10,14 +10,16 @@ import { points } from "@3dafl/shared";
 
 async function main() {
   const teams = loadTeams();
-  const season = loadSeason(teams);
+  let season = loadSeason(teams);
   const decisionEngine = createDecisionEngine();
 
-  const scheduled = nextScheduledMatch(season);
-  if (!scheduled) {
-    console.log("Season complete — no unplayed matches remain. Delete server/data/*.json to start a new season.");
-    return;
+  if (!nextScheduledMatch(season)) {
+    season = startNextSeason(teams, season);
+    saveTeams(teams);
+    saveSeason(season);
+    console.log(`\nSeason complete — starting the ${season.year} season (players keep their attributes and are a year older).`);
   }
+  const scheduled = nextScheduledMatch(season)!;
 
   const home = teams.find((t) => t.id === scheduled.homeTeamId)!;
   const away = teams.find((t) => t.id === scheduled.awayTeamId)!;

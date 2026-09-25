@@ -3,7 +3,7 @@ import cors from "cors";
 import http from "node:http";
 import { config } from "./config.js";
 import { loadTeams, loadSeason, saveTeams, saveSeason, resetAll } from "./persistence/store.js";
-import { nextScheduledMatch, recordMatchResult, sortedLadder } from "./progression/season.js";
+import { nextScheduledMatch, recordMatchResult, sortedLadder, startNextSeason } from "./progression/season.js";
 import { applyProgressionToTeam } from "./progression/progression.js";
 import { aggregateMatchStats } from "./progression/stats.js";
 import { createDecisionEngine } from "./jev/index.js";
@@ -37,6 +37,17 @@ app.post("/api/reset", (_req, res) => {
   season = fresh.season;
   runningMatchId = null;
   res.json({ teams, season });
+});
+
+app.post("/api/season/next", (_req, res) => {
+  if (nextScheduledMatch(season)) {
+    res.status(409).json({ error: "The current season still has matches to play" });
+    return;
+  }
+  season = startNextSeason(teams, season);
+  saveTeams(teams);
+  saveSeason(season);
+  res.json({ season, ladder: sortedLadder(season) });
 });
 
 app.post("/api/match/start", (req, res) => {

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { CommentatedEvent, TeamSummary } from "@3dafl/shared";
-import { fetchState, startMatch } from "./net/api.js";
+import { fetchState, startMatch, startNextSeason, type StateResponse } from "./net/api.js";
 import { LiveMatchSocket } from "./net/wsClient.js";
 import { FrameBuffer } from "./net/frameBuffer.js";
 import { buildField, HALF_LENGTH } from "./scene/field.js";
@@ -48,15 +48,32 @@ let roster: RosterEntry[] = [];
 let teamNames = { home: "Home", away: "Away" };
 let currentMatchId: string | null = null;
 let nextMatchTimer: number | null = null;
+let seasonComplete = false;
 
 function rosterFrom(home: TeamSummary, away: TeamSummary): RosterEntry[] {
   return [home, away].flatMap((team) => team.players.map((p) => ({ number: p.number, name: p.name, team: team.name, color: team.color })));
 }
 
-async function refreshLadder() {
+async function refreshLadder(): Promise<StateResponse> {
   const state = await fetchState();
-  hud.setLadder(state.ladder, state.teams);
+  hud.setLadder(state.ladder, state.teams, state.season.year);
+  seasonComplete = !state.season.schedule.some((m) => !m.played);
   return state;
+}
+
+/** Offers what comes next — the next match, or rolling into a new season — optionally continuing on its own. */
+function offerNext(state: StateResponse, autoContinue: boolean) {
+  const label = seasonComplete ? `Start ${state.season.year + 1} Season` : autoContinue ? "Watch Next Match Now" : "Start Match";
+  hud.setStartEnabled(true, label);
+  if (autoContinue) nextMatchTimer = window.setTimeout(() => advance(), 8000);
+}
+
+async function advance() {
+  if (seasonComplete) {
+    await startNextSeason();
+    await refreshLadder();
+  }
+  await beginMatch();
 }
 
 function setUpMatch(matchId: string, ce: CommentatedEvent) {
@@ -98,7 +115,7 @@ async function beginMatch() {
   const started = await startMatch();
   // A 409 means a match is already running; its events are on their way over the socket.
   if ("error" in started && !started.error.includes("already in progress")) {
-    hud.setStartEnabled(false, "Season complete");
+    offerNext(await refreshLadder(), false);
   }
 }
 
@@ -115,22 +132,15 @@ socket.onMessage((msg) => {
     case "matchEnded":
       if (msg.matchId !== currentMatchId) break;
       hud.setCarrier(null);
-      refreshLadder().then((state) => {
-        if (!state.season.schedule.some((m) => !m.played)) {
-          hud.setStartEnabled(false, "Season complete");
-          return;
-        }
-        // Keep the season rolling on its own; the button lets you skip the wait.
-        hud.setStartEnabled(true, "Watch Next Match Now");
-        nextMatchTimer = window.setTimeout(() => beginMatch(), 8000);
-      });
+      // Keep rolling on its own — next match, or next season — the button lets you skip the wait.
+      refreshLadder().then((state) => offerNext(state, true));
       break;
   }
 });
 socket.connect();
 
-hud.onStartClick(() => beginMatch());
-hud.onNextMatchClick(() => beginMatch());
+hud.onStartClick(() => advance());
+hud.onNextMatchClick(() => advance());
 
 window.addEventListener("resize", () => {
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -155,6 +165,6 @@ function animate() {
 }
 animate();
 
-refreshLadder().then(() => {
-  if (!currentMatchId) hud.setStartEnabled(true, "Start Match");
+refreshLadder().then((state) => {
+  if (!currentMatchId) offerNext(state, false);
 });

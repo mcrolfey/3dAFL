@@ -30,7 +30,7 @@ No key? The server automatically falls back to a local, attribute-weighted heuri
 npm run dev
 ```
 
-Starts the server on `:8787` and the client on `:5173`. Open `http://localhost:5173`, click **Start Match**, and watch — the match runs unattended through all four quarters, and the app auto-advances to the next scheduled match once the previous one finishes, progressing the season automatically.
+Starts the server on `:8787` and the client on `:5173`. Open `http://localhost:5173`, click **Start Match**, and watch — the match runs unattended through all four quarters, and the app auto-advances to the next scheduled match once the previous one finishes, progressing the season automatically. When every fixture is played it rolls into the next season: same players with the attributes they've built up, a year older, fresh season stats, and a reshuffled fixture.
 
 Headless (no browser: plays the next scheduled match instantly, prints play-by-play plus a team stats table, and saves the result):
 
