@@ -14,13 +14,13 @@ A 3D AFL match simulator that runs automatically from start to finish, broadcast
 npm install
 ```
 
-Put your TypeSafe AI key in `.env` at the repo root (copy `.env.example`):
+<!-- Put your TypeSafe AI key in `.env` at the repo root (copy `.env.example`):
 
 ```
 TYPESAFE_API_KEY=your_key_here
 ```
 
-No key? The server automatically falls back to a local, attribute-weighted heuristic decision engine — everything still runs, it just isn't Jev-driven. Swapping in a working key later requires no code changes.
+No key? The server automatically falls back to a local, attribute-weighted heuristic decision engine — everything still runs, it just isn't Jev-driven. Swapping in a working key later requires no code changes. -->
 
 `SIM_SPEED` controls playback pace: how many sim-clock seconds pass per real second while a match is being watched live (default `4`, so a 20-minute quarter plays out over ~5 real minutes). Lower it for a slower, more realistic pace; raise it to blitz through a match faster. While watching, the **Pace** button (top left) switches between real time (1x, so a quarter takes a real 20 minutes plus time-on) and the `SIM_SPEED` pace; it takes effect immediately, even mid-match.
 
