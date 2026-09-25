@@ -1,6 +1,6 @@
 # 3dAFL
 
-A 3D AFL match simulator that runs automatically from start to finish, broadcast-style. Every player and the ball are physically simulated on the ground; player decisions (handball, kick short, go long, run and bounce, shoot, play on) are made by [Jev](https://typesafe.ai), TypeSafe AI's structured-decision model, with a local heuristic fallback so it always runs even without API access. Player attributes accumulate across a season.
+A 3D AFL match simulator that runs automatically from start to finish, broadcast-style. Every player and the ball are physically simulated on the ground; player decisions (handball, kick short, go long, run and bounce, shoot, play on) . Player attributes accumulate across a season.
 
 ## Stack
 
