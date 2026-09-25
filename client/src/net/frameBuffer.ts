@@ -22,6 +22,11 @@ export class FrameBuffer {
   private frames: Stamped[] = [];
   private delayMs = 160;
 
+  /** How far behind real time playback runs — events should be delayed by this to line up with what's on screen. */
+  get delay(): number {
+    return this.delayMs;
+  }
+
   configure(frameIntervalSim: number, simSpeed: number) {
     const realIntervalMs = (frameIntervalSim / simSpeed) * 1000;
     this.delayMs = Math.max(80, realIntervalMs * 2.5);

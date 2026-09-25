@@ -23,6 +23,7 @@ export class Hud {
   private fulltimeBanner = document.getElementById("fulltime-banner")!;
   private fulltimeText = document.getElementById("fulltime-text")!;
   private nextMatchBtn = document.getElementById("next-match-btn") as HTMLButtonElement;
+  private soundBtn = document.getElementById("sound-btn") as HTMLButtonElement;
   private carrierTag = document.getElementById("carrier-tag")!;
   private carrierNumber = document.getElementById("carrier-number")!;
   private carrierName = document.getElementById("carrier-name")!;
@@ -84,6 +85,15 @@ export class Hud {
 
   onNextMatchClick(handler: () => void) {
     this.nextMatchBtn.addEventListener("click", handler);
+  }
+
+  onSoundClick(handler: () => void) {
+    this.soundBtn.addEventListener("click", handler);
+  }
+
+  setSoundState(state: "locked" | "on" | "off") {
+    this.soundBtn.textContent = state === "locked" ? "Enable sound" : state === "on" ? "Sound: On" : "Sound: Off";
+    this.soundBtn.classList.toggle("off", state !== "on");
   }
 
   showFullTime(homeName: string, awayName: string, home: ScoreLine, away: ScoreLine) {

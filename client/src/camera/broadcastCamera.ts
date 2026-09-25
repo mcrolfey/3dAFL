@@ -13,7 +13,8 @@ export class BroadcastCamera {
   private readonly look = new THREE.Vector3(0, 1, 0);
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 600);
+    // A tight lens like a real broadcast camera: frames the contest, not the whole ground.
+    this.camera = new THREE.PerspectiveCamera(26, aspect, 0.1, 600);
     this.camera.position.copy(this.desiredPos);
   }
 

@@ -8,6 +8,9 @@ import { PlayersManager } from "./scene/players.js";
 import { BallView } from "./scene/ball.js";
 import { BroadcastCamera } from "./camera/broadcastCamera.js";
 import { Hud } from "./hud/hud.js";
+import { AudioEngine } from "./audio/audioEngine.js";
+import { Voices } from "./audio/voices.js";
+import { MatchAudio } from "./audio/matchAudio.js";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement;
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -35,6 +38,50 @@ const broadcastCamera = new BroadcastCamera(window.innerWidth / window.innerHeig
 const ball = new BallView(scene);
 const hud = new Hud();
 const frames = new FrameBuffer();
+const sfx = new AudioEngine();
+const voices = new Voices();
+const matchAudio = new MatchAudio(sfx, voices, broadcastCamera.camera, () => ball.mesh.position);
+
+// --- sound: browsers only allow audio after a click, so it switches on at the first one ---
+
+const SOUND_PREF_KEY = "3dafl.sound";
+let soundWanted = true;
+try {
+  soundWanted = localStorage.getItem(SOUND_PREF_KEY) !== "off";
+} catch {
+  // storage unavailable (private window etc.) — default to on
+}
+
+function applySound() {
+  sfx.setEnabled(soundWanted);
+  voices.enabled = soundWanted && sfx.running;
+  if (!soundWanted) voices.silence();
+  hud.setSoundState(!sfx.running ? (soundWanted ? "locked" : "off") : soundWanted ? "on" : "off");
+  try {
+    localStorage.setItem(SOUND_PREF_KEY, soundWanted ? "on" : "off");
+  } catch {
+    // not persisted; fine
+  }
+}
+
+async function unlockSound() {
+  if (soundWanted && !sfx.running) {
+    await sfx.unlock();
+    applySound();
+  }
+}
+
+hud.onSoundClick(async () => {
+  if (!sfx.running) {
+    soundWanted = true;
+    await sfx.unlock();
+  } else {
+    soundWanted = !soundWanted;
+  }
+  applySound();
+});
+document.addEventListener("pointerdown", () => void unlockSound());
+applySound();
 
 interface RosterEntry {
   number: number;
@@ -86,6 +133,7 @@ function setUpMatch(matchId: string, ce: CommentatedEvent) {
   players = new PlayersManager(scene, home, away);
   frames.reset();
   frames.configure(frameInterval, simSpeed);
+  matchAudio.setRoster(home.players.length);
   hud.setTeams(home.name, away.name);
   hud.clearCommentary();
   hud.hideFullTime();
@@ -97,9 +145,14 @@ function handleEvent(ce: CommentatedEvent) {
   if (ce.text) hud.pushCommentary(ce.text);
 
   const event = ce.event;
-  if (event.kind === "shotAtGoal" && event.result === "goal") {
-    broadcastCamera.triggerGoalReplay(ball.mesh.position.x >= 0 ? HALF_LENGTH : -HALF_LENGTH);
-  }
+  // Events arrive a beat before the frames showing them are played back; hold sounds and camera cuts until then.
+  window.setTimeout(() => {
+    matchAudio.onEvent(event);
+    if (event.kind === "disposal") players?.playDisposal(event.playerId, event.type, event.from, event.to);
+    if (event.kind === "shotAtGoal" && event.result === "goal") {
+      broadcastCamera.triggerGoalReplay(ball.mesh.position.x >= 0 ? HALF_LENGTH : -HALF_LENGTH);
+    }
+  }, frames.delay);
   if (event.kind === "fullTime") {
     hud.showFullTime(teamNames.home, teamNames.away, event.homeScore, event.awayScore);
   }
@@ -112,10 +165,14 @@ async function beginMatch() {
   }
   hud.hideFullTime();
   hud.setStartEnabled(false, "Starting...");
-  const started = await startMatch();
-  // A 409 means a match is already running; its events are on their way over the socket.
-  if ("error" in started && !started.error.includes("already in progress")) {
-    offerNext(await refreshLadder(), false);
+  try {
+    const started = await startMatch();
+    // A 409 means a match is already running; its events are on their way over the socket.
+    if ("error" in started && !started.error.includes("already in progress")) {
+      offerNext(await refreshLadder(), false);
+    }
+  } catch {
+    hud.setStartEnabled(true, "Server offline — retry");
   }
 }
 
@@ -154,10 +211,11 @@ function animate() {
 
   const sample = frames.sample(performance.now());
   if (sample && players) {
-    players.update(sample.players, sample.frame.carrierIndex, delta);
+    players.update(sample.players, sample.frame.carrierIndex, sample.ball, sample.frame.clock.quarter, delta);
     ball.update(sample.ball[0], sample.ball[1], sample.ball[2], delta);
     hud.updateClock(sample.frame.clock, sample.frame.clockRunning);
     hud.setCarrier(roster[sample.frame.carrierIndex] ?? null);
+    matchAudio.onFrame(sample, delta);
   }
 
   broadcastCamera.update(delta, ball.mesh.position);
