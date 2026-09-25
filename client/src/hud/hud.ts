@@ -24,6 +24,7 @@ export class Hud {
   private fulltimeText = document.getElementById("fulltime-text")!;
   private nextMatchBtn = document.getElementById("next-match-btn") as HTMLButtonElement;
   private soundBtn = document.getElementById("sound-btn") as HTMLButtonElement;
+  private commentaryBtn = document.getElementById("commentary-btn") as HTMLButtonElement;
   private carrierTag = document.getElementById("carrier-tag")!;
   private carrierNumber = document.getElementById("carrier-number")!;
   private carrierName = document.getElementById("carrier-name")!;
@@ -59,10 +60,10 @@ export class Hud {
     this.carrierTeam.textContent = carrier.team;
   }
 
-  pushCommentary(text: string) {
+  pushCommentary(text: string, remark = false) {
     if (!text) return;
     const line = document.createElement("div");
-    line.className = "line";
+    line.className = remark ? "line remark" : "line";
     line.textContent = text;
     this.feed.prepend(line);
     while (this.feed.childElementCount > 8) {
@@ -94,6 +95,15 @@ export class Hud {
   setSoundState(state: "locked" | "on" | "off") {
     this.soundBtn.textContent = state === "locked" ? "Enable sound" : state === "on" ? "Sound: On" : "Sound: Off";
     this.soundBtn.classList.toggle("off", state !== "on");
+  }
+
+  onCommentaryClick(handler: () => void) {
+    this.commentaryBtn.addEventListener("click", handler);
+  }
+
+  setCommentaryState(on: boolean) {
+    this.commentaryBtn.textContent = on ? "Commentary: On" : "Commentary: Off";
+    this.commentaryBtn.classList.toggle("off", !on);
   }
 
   showFullTime(homeName: string, awayName: string, home: ScoreLine, away: ScoreLine) {

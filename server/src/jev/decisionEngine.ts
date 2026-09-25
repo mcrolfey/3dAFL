@@ -189,12 +189,12 @@ export class LocalHeuristicDecisionEngine implements DecisionEngine {
       : 0;
 
     // Inside 50 from a poor spot, look for a teammate in a better position rather than blaze away.
-    const lookingForBetter = ctx.inForward50 && goalChance < 0.4 && (hasHandballOption || ctx.openTeammatesAhead > 0);
+    const lookingForBetter = ctx.inForward50 && goalChance < 0.3 && (hasHandballOption || ctx.openTeammatesAhead > 0);
     const weights: Record<DisposalChoice, number> = {
-      shootForGoal: goalChance > 0.3 ? goalChance * (ctx.protectedPossession ? 10 : 5) : goalChance * 0.5,
-      handball: ctx.protectedPossession || !hasHandballOption ? 0.05 : pressured ? 3 : 1.2,
+      shootForGoal: goalChance > 0.2 ? goalChance * (ctx.protectedPossession ? 10 : 7) : goalChance * 0.5,
+      handball: ctx.protectedPossession || !hasHandballOption ? 0.05 : pressured ? 4.5 : 2.4,
       kickShort: ctx.openTeammatesAhead > 0 || lookingForBetter ? 2.4 : 0.6,
-      kickLong: ctx.inForward50 ? 0.3 : ctx.distanceToGoal > 110 ? 1.3 : 0.6,
+      kickLong: ctx.inForward50 ? 0.3 : ctx.distanceToGoal > 110 ? 1.8 : 1.1,
       run:
         ctx.nearestOpponentDistance > 10 && !ctx.inForward50
           ? 1.0 + 1.5 * norm(a.speed)

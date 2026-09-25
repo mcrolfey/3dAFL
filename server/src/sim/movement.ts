@@ -24,8 +24,9 @@ export interface MoveContext {
   overrides: Map<SimPlayer, MoveTarget>;
 }
 
-const ACCEL = 7;
-const MIN_SEPARATION = 0.9;
+const ACCEL = 4;
+// Close enough for bodies to meet in tackles and packs, without players passing through each other.
+const MIN_SEPARATION = 0.65;
 
 function nearest(players: SimPlayer[], to: Vec2, count: number, t: number): SimPlayer[] {
   return players
@@ -39,32 +40,34 @@ export function zonePosition(p: SimPlayer, ctx: MoveContext): Vec2 {
   const dir = ctx.attackDirOf(p.team);
   const base = slotWorld(p.slot, dir);
   const push = ctx.possTeam === null ? 0 : ctx.possTeam === p.team ? 8 : -6;
-  const x = base.x * 0.75 + ctx.focus.x * 0.45 + push * dir;
-  let y = base.y * 0.85 + ctx.focus.y * 0.35;
-  let zx = x;
-  if (p.slot.line === "centre" && p.slot.name !== "Wing") {
-    // Onballers play closer to the footy than anyone else.
-    zx = x * 0.65 + ctx.focus.x * 0.35;
-    y = y * 0.65 + ctx.focus.y * 0.35;
-  }
-  return clampInside({ x: zx, y }, 3);
+  // The whole shape compresses toward the ball: whoever's zone the ball is in (backs down back, forwards up forward)
+  // steps up to meet it, while the onballers hold the corridor behind play instead of shadowing the footy everywhere.
+  const follow = p.slot.line === "centre" ? (p.slot.name === "Wing" ? 0.5 : 0.42) : 0.62;
+  const x = base.x * 0.55 + ctx.focus.x * follow + push * dir;
+  const y = base.y * 0.85 + ctx.focus.y * 0.35;
+  return clampInside({ x, y }, 3);
 }
 
 function defendingPosition(p: SimPlayer, ctx: MoveContext, zone: Vec2): MoveTarget {
   const opp = p.matchup;
   if (!opp) return { pos: zone, sprint: false };
   // A forward who breaks into a lead gets a jump on their defender, who's caught flat-footed for a moment.
-  if (opp.leadTarget && ctx.t < opp.leadUntil && ctx.t - opp.leadStartedAt < 0.7) return { pos: p.pos, sprint: false };
+  if (opp.leadTarget && ctx.t < opp.leadUntil && ctx.t - opp.leadStartedAt < 0.45) return { pos: p.pos, sprint: false };
   const ownGoal = goalCenter((ctx.attackDirOf(p.team) * -1) as 1 | -1);
   // With the ball deep in your own end, defenders play right on their forward; elsewhere teams mostly zone off,
   // leaving the key-position matchups as the only true man-on-man.
   const deep = dist(ctx.focus, ownGoal) < 55;
-  const keyPosition = /Full|pocket|Centre half/i.test(p.slot.name);
+  // Key-position players and the onballers play tight on their opponent; flankers and wings zone off more.
+  const keyPosition = /Full|pocket|Centre|Rover/i.test(p.slot.name);
+  // Deep in defence they play level with their forward (so they can front up to the ball); further afield they
+  // stay goal-side to stop them getting out the back.
   const goalSide = unit(opp.pos, ownGoal);
-  const gap = deep ? 1.2 : 2.5;
-  const manPos = { x: opp.pos.x + goalSide.x * gap, y: opp.pos.y + goalSide.y * gap };
+  const towardBall = unit(opp.pos, ctx.focus);
+  const manPos = deep
+    ? { x: opp.pos.x + towardBall.x * 0.6, y: opp.pos.y + towardBall.y * 0.6 }
+    : { x: opp.pos.x + goalSide.x * 2.5, y: opp.pos.y + goalSide.y * 2.5 };
   const oppToBall = dist(opp.pos, ctx.focus);
-  const tightness = oppToBall < 35 ? (deep ? 0.95 : keyPosition ? 0.75 : 0.5) : oppToBall < 60 ? 0.45 : 0.3;
+  const tightness = oppToBall < 35 ? (deep ? 0.85 : keyPosition ? 0.65 : 0.4) : oppToBall < 60 ? 0.45 : 0.3;
   const pos = clampInside({ x: zone.x + (manPos.x - zone.x) * tightness, y: zone.y + (manPos.y - zone.y) * tightness }, 2);
   return { pos, sprint: oppToBall < 40 && dist(p.pos, pos) > 5 };
 }
@@ -78,7 +81,7 @@ function leadingPosition(p: SimPlayer, ctx: MoveContext, zone: Vec2): MoveTarget
     p.leadTarget = clampInside({ x: p.pos.x + toward.x * len, y: p.pos.y + toward.y * len + (Math.random() - 0.5) * 10 }, 3);
     p.leadStartedAt = ctx.t;
     p.leadUntil = ctx.t + 2 + Math.random() * 1.5;
-    p.nextLeadAt = ctx.t + 5 + Math.random() * 6;
+    p.nextLeadAt = ctx.t + 7 + Math.random() * 8;
     return { pos: p.leadTarget, sprint: true };
   }
   p.leadTarget = null;
@@ -95,13 +98,21 @@ export function planMovement(players: SimPlayer[], ctx: MoveContext): Map<SimPla
     const opponents = teams[ctx.carrier.team === 0 ? 1 : 0].filter((p) => !targets.has(p));
     // The nearest opponent closes down the ball carrier; a second only joins if they're right there.
     const [first, second] = nearest(opponents, ctx.carrier.pos, 2, ctx.t);
-    if (first && dist(first.pos, ctx.carrier.pos) < 15) targets.set(first, { pos: chaseTarget, sprint: true });
-    if (second && dist(second.pos, ctx.carrier.pos) < 8) targets.set(second, { pos: chaseTarget, sprint: true });
+    // Beyond a few metres they press at a controlled pace to hold their space, only sprinting to pressure up close.
+    const firstGap = first ? dist(first.pos, ctx.carrier.pos) : Infinity;
+    if (first && firstGap < 11) targets.set(first, { pos: chaseTarget, sprint: firstGap < 5 });
+    if (second && dist(second.pos, ctx.carrier.pos) < 6) targets.set(second, { pos: chaseTarget, sprint: true });
 
-    // Two nearby teammates run past/around for a handball receive.
+    // Two nearby teammates run past/around for a handball receive — preferring ones who haven't just had it, so the
+    // ball moves through the team rather than bouncing between the same couple of players.
     const dir = ctx.attackDirOf(ctx.carrier.team);
-    const mates = teams[ctx.carrier.team].filter((p) => p !== ctx.carrier && !targets.has(p) && dist(p.pos, ctx.carrier!.pos) < 30);
-    nearest(mates, ctx.carrier.pos, 2, ctx.t).forEach((mate, i) => {
+    const mates = teams[ctx.carrier.team]
+      .filter((p) => p !== ctx.carrier && !targets.has(p) && p.stunnedUntil <= ctx.t && dist(p.pos, ctx.carrier!.pos) < 30)
+      .map((p) => ({ p, cost: dist(p.pos, ctx.carrier!.pos) + (ctx.t - p.lastPossessionAt < 8 ? 25 : 0) }))
+      .sort((a, b) => a.cost - b.cost)
+      .slice(0, 2)
+      .map((m) => m.p);
+    mates.forEach((mate, i) => {
       const side = Math.sign(mate.pos.y - ctx.carrier!.pos.y) || 1;
       const pos =
         i === 0
@@ -117,13 +128,18 @@ export function planMovement(players: SimPlayer[], ctx: MoveContext): Map<SimPla
     }
   }
 
-  // Defending deep, the Centre and a Wing drop back unmarked into "the hole" in front of goal to intercept entries.
+  // Defending deep, two midfielders leave their opponents and drop into "the hole" in front of goal to intercept
+  // entries. They're whichever ones are minding the players furthest from the ball — the least dangerous to leave.
   if (ctx.possTeam !== null && ctx.mode !== "stoppage" && ctx.mode !== "dead") {
     const defending = (ctx.possTeam === 0 ? 1 : 0) as 0 | 1;
     const ownGoal = goalCenter((ctx.attackDirOf(defending) * -1) as 1 | -1);
     if (dist(ctx.focus, ownGoal) < 80) {
       const toBall = unit(ownGoal, ctx.focus);
-      const spares = teams[defending].filter((p) => !targets.has(p) && (p.slot.name === "Centre" || (p.slot.name === "Wing" && p.slot.y * ctx.focus.y <= 0)));
+      const threat = (p: SimPlayer) => (p.matchup ? dist(p.matchup.pos, ctx.focus) : 0);
+      const spares = teams[defending]
+        .filter((p) => !targets.has(p) && p.slot.line === "centre" && p.slot.name !== "Ruck")
+        .sort((a, b) => threat(b) - threat(a))
+        .slice(0, 2);
       spares.forEach((p, i) => {
         const depth = i === 0 ? 24 : 34;
         const pos = clampInside({ x: ownGoal.x + toBall.x * depth - toBall.y * (i === 0 ? 0 : 8), y: ownGoal.y + toBall.y * depth + toBall.x * (i === 0 ? 0 : 8) }, 2);

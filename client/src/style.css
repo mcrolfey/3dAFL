@@ -84,10 +84,22 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
-#sound-btn {
+#audio-controls {
   position: absolute;
   top: 16px;
   left: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  /* wrap onto more rows rather than run under the centred scoreboard on narrower windows */
+  max-width: calc(50vw - 200px);
+}
+
+#sound-btn,
+#commentary-btn,
+#stats-btn,
+#camera-btn,
+#pace-btn {
   pointer-events: auto;
   background: rgba(10, 14, 20, 0.85);
   color: #fff;
@@ -99,8 +111,145 @@ html, body {
   cursor: pointer;
 }
 
-#sound-btn.off {
+#sound-btn.off,
+#commentary-btn.off,
+#stats-btn.off {
   opacity: 0.7;
+}
+
+/* Live box score. */
+#stats-panel {
+  position: absolute;
+  top: 170px;
+  right: 16px;
+  width: 520px;
+  max-height: calc(100vh - 280px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(10, 14, 20, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  color: #fff;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+#stats-panel.hidden {
+  display: none;
+}
+
+.stats-tabs {
+  display: flex;
+}
+
+.stats-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 9px 8px 7px;
+  font-weight: 700;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.stats-tab.active {
+  color: #fff;
+  border-bottom-color: var(--team-color, #e8b923);
+}
+
+#stats-summary {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 14px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+#stats-summary div {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+#stats-summary .total {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-scroll {
+  overflow-y: auto;
+}
+
+#stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+#stats-table th {
+  position: sticky;
+  top: 0;
+  background: rgb(18, 23, 31);
+  font-weight: 600;
+  opacity: 0.85;
+  padding: 5px 4px;
+  text-align: center;
+}
+
+#stats-table td {
+  padding: 3px 4px;
+  text-align: center;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+#stats-table .name {
+  text-align: left;
+  white-space: nowrap;
+}
+
+#stats-table .num {
+  opacity: 0.6;
+}
+
+#stats-table .pos {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  opacity: 0.75;
+}
+
+#stats-table th.sortable {
+  cursor: pointer;
+}
+
+#stats-table th.sorted {
+  opacity: 1;
+  color: #ffe066;
+  box-shadow: inset 0 -2px 0 #ffe066;
+}
+
+#stats-table .leader {
+  color: #ffe066;
+  font-weight: 700;
+}
+
+#stats-table tr.carrier td {
+  background: rgba(255, 224, 102, 0.16);
+}
+
+/* The expert's colour commentary, set apart from the play-by-play. */
+#commentary-feed .line.remark {
+  border-left-color: #7fc8ff;
+  font-style: italic;
 }
 
 /* Time-on: the clock is stopped (after a goal, ball out of bounds, etc.). */

@@ -1,6 +1,6 @@
 import type { CommentatedEvent, DecisionEngine, MatchClock, MatchEvent, MatchFrame, MatchResult, ScoreLine, Team } from "@3dafl/shared";
 import { simulateMatch } from "./sim/engine.js";
-import { buildPlayerLookup, commentate } from "./commentary/commentary.js";
+import { Commentator } from "./commentary/commentary.js";
 
 export interface MatchRunResult {
   result: MatchResult;
@@ -15,24 +15,29 @@ export interface RunMatchOptions {
   decisionEngine: DecisionEngine;
   /** sim seconds per real second; omit for the configured live pace */
   simSpeed?: number;
+  /** the live pace, when it can be changed mid-match */
+  liveSpeed?: () => number;
   onEvent?: (event: CommentatedEvent) => void | Promise<void>;
   onFrame?: (frame: MatchFrame) => void;
 }
 
 /** Runs a full match start-to-finish, streaming commentated events and physics frames, with zero manual input required. */
 export async function runMatch(opts: RunMatchOptions): Promise<MatchRunResult> {
-  const { matchId, home, away, decisionEngine, simSpeed, onEvent, onFrame } = opts;
-  const lookup = buildPlayerLookup(home, away);
+  const { matchId, home, away, decisionEngine, simSpeed, liveSpeed, onEvent, onFrame } = opts;
+  const commentator = new Commentator(home, away);
   const events: MatchEvent[] = [];
 
   let homeScore: ScoreLine = { goals: 0, behinds: 0 };
   let awayScore: ScoreLine = { goals: 0, behinds: 0 };
   let clock: MatchClock = { quarter: 1, secondsRemaining: 20 * 60 };
 
-  for await (const event of simulateMatch({ matchId, home, away, decisionEngine, simSpeed })) {
+  for await (const event of simulateMatch({ matchId, home, away, decisionEngine, simSpeed, liveSpeed })) {
     if (event.kind === "frame") {
       clock = event.frame.clock;
       onFrame?.(event.frame);
+      // Lulls in play are when the expert gets a word in.
+      const remark = event.frame.clockRunning ? commentator.remark(clock) : null;
+      if (remark && onEvent) await onEvent({ event: { kind: "remark" }, ...remark, homeScore, awayScore, clock });
       continue;
     }
 
@@ -43,7 +48,8 @@ export async function runMatch(opts: RunMatchOptions): Promise<MatchRunResult> {
     }
 
     if (onEvent) {
-      await onEvent({ event, text: commentate(event, lookup) ?? "", homeScore, awayScore, clock });
+      const line = commentator.describe(event, clock);
+      await onEvent({ event, text: line?.text ?? "", priority: line?.priority ?? 0, homeScore, awayScore, clock });
     }
   }
 

@@ -11,7 +11,27 @@
       <canvas id="scene"></canvas>
 
       <div id="hud">
-        <button id="sound-btn">Enable sound</button>
+        <div id="audio-controls">
+          <button id="sound-btn">Enable sound</button>
+          <button id="commentary-btn">Commentary: On</button>
+          <button id="stats-btn">Stats: Off</button>
+          <button id="camera-btn">Camera: Auto</button>
+          <button id="pace-btn" title="Switch between real time and the normal quicker pace">Pace: 4×</button>
+        </div>
+
+        <div id="stats-panel" class="hidden">
+          <div class="stats-tabs">
+            <button class="stats-tab">Home</button>
+            <button class="stats-tab">Away</button>
+          </div>
+          <div id="stats-summary"></div>
+          <div class="stats-scroll">
+            <table id="stats-table">
+              <thead><tr></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
 
         <div id="scoreboard">
           <div class="team home">

@@ -121,11 +121,11 @@ export type MatchEvent =
   | { kind: "disposal"; playerId: string; teamId: string; type: "kick" | "handball"; intent: DisposalChoice; targetPlayerId: string | null; quality: number; from: FieldPos; to: FieldPos }
   | { kind: "playOn"; playerId: string }
   | { kind: "bounce"; playerId: string }
-  | { kind: "mark"; playerId: string; teamId: string; contested: boolean; intercept: boolean }
+  | { kind: "mark"; playerId: string; teamId: string; contested: boolean; intercept: boolean; distanceToGoal: number; angleToGoalDeg: number; inScoringRange: boolean }
   | { kind: "spoil"; playerId: string; opponentId: string }
   | { kind: "droppedMark"; playerId: string }
   | { kind: "tackle"; playerId: string; teamId: string; opponentId: string; outcome: TackleOutcome }
-  | { kind: "freeKick"; playerId: string; teamId: string; reason: string }
+  | { kind: "freeKick"; playerId: string; teamId: string; reason: string; againstPlayerId: string | null }
   | { kind: "clearance"; playerId: string; teamId: string }
   | { kind: "insideFifty"; playerId: string; teamId: string }
   | { kind: "outOfBounds"; onTheFull: boolean; lastTeamId: string }
@@ -133,11 +133,47 @@ export type MatchEvent =
   | { kind: "rushedBehind"; teamId: string; homeScore: ScoreLine; awayScore: ScoreLine }
   | { kind: "kickIn"; teamId: string; playerId: string }
   | { kind: "quarterEnd"; quarter: 1 | 2 | 3 | 4; homeScore: ScoreLine; awayScore: ScoreLine }
-  | { kind: "fullTime"; homeScore: ScoreLine; awayScore: ScoreLine; winnerTeamId: string | null };
+  | { kind: "fullTime"; homeScore: ScoreLine; awayScore: ScoreLine; winnerTeamId: string | null }
+  /** Commentary-only: the expert's colour comments in a lull. Never produced by the engine. */
+  | { kind: "remark" };
+
+/** One player's box-score line for a match. */
+export interface PlayerStatLine {
+  kicks: number;
+  handballs: number;
+  disposals: number;
+  marks: number;
+  contestedMarks: number;
+  tackles: number;
+  goals: number;
+  behinds: number;
+  hitouts: number;
+  clearances: number;
+  insideFifties: number;
+  freesFor: number;
+  freesAgainst: number;
+}
+
+/** AFL Fantasy's official scoring formula. */
+export function fantasyPoints(s: PlayerStatLine): number {
+  return (
+    s.kicks * 3 +
+    s.handballs * 2 +
+    s.marks * 3 +
+    s.tackles * 4 +
+    s.hitouts +
+    s.goals * 6 +
+    s.behinds +
+    s.freesFor -
+    s.freesAgainst * 3
+  );
+}
 
 export interface CommentatedEvent {
   event: MatchEvent;
   text: string;
+  /** How worth saying out loud this line is: 0 feed only, 1 routine, 2 notable, 3 big moment. */
+  priority: number;
   homeScore: ScoreLine;
   awayScore: ScoreLine;
   clock: MatchClock;
@@ -147,7 +183,8 @@ export interface TeamSummary {
   id: string;
   name: string;
   color: string;
-  players: { id: string; name: string; position: Position; number: number }[];
+  /** role: the named position they line up in, as a team-sheet abbreviation (FB, CHF, W, RO, ...) */
+  players: { id: string; name: string; position: Position; number: number; role: string }[];
 }
 
 // --- Decision engine (Jev-backed or heuristic fallback) ---

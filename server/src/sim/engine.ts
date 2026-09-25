@@ -19,9 +19,13 @@ import {
   dist,
   distanceToGoal,
   GOAL_HALF_WIDTH,
+  GOAL_LINE_X,
+  GOAL_SQUARE_DEPTH,
   goalCenter,
   isInForward50,
+  isInGoalSquare,
   isInsideField,
+  outsideGoalSquare,
   randomJitter,
   unit,
   type Vec2,
@@ -33,6 +37,14 @@ import { AsyncDecision, createSimPlayer, type SimBall, type SimPlayer } from "./
 
 const DT = 0.1;
 export const FRAME_INTERVAL = 0.25;
+
+/**
+ * Sim seconds between streamed frames. Watching at (or near) real time, frames go out every tick so the ball's arc
+ * and players' running stay smooth; at quicker paces every 0.25s is plenty.
+ */
+export function frameIntervalFor(simSpeed: number): number {
+  return simSpeed <= 2 ? DT : FRAME_INTERVAL;
+}
 const QUARTER_SECONDS = 20 * 60;
 /** simSpeed at or above this runs as fast as possible with no real-time pacing (headless/calibration). */
 export const UNPACED_SPEED = 10_000;
@@ -50,6 +62,8 @@ interface PossessionPhase {
   markSpot: Vec2 | null;
   manOnMark: SimPlayer | null;
   isKickIn: boolean;
+  /** earliest a player can get rid of it after winning the ball: gathering it, getting balance, finding an option */
+  steadyAt: number;
   priorOpportunity: boolean;
   running: boolean;
   decision: AsyncDecision<DisposalDecision> | null;
@@ -103,16 +117,18 @@ interface DeadPhase {
   next: () => void;
   /** optional per-tick work while play is stopped, e.g. returning the ball to the centre */
   tick?: () => void;
+  /** set while a kick-in is being set up: the opposition have to clear out of that goal square */
+  kickIn?: { end: 1 | -1; team: 0 | 1 };
 }
 
 type Phase = PossessionPhase | FlightPhase | LoosePhase | StoppagePhase | DeadPhase;
 
-function teamSummary(team: Team): TeamSummary {
+function teamSummary(team: Team, roleOf: (playerId: string) => string): TeamSummary {
   return {
     id: team.id,
     name: team.name,
     color: team.color,
-    players: team.players.map((p, i) => ({ id: p.id, name: p.name, position: p.position, number: i + 1 })),
+    players: team.players.map((p, i) => ({ id: p.id, name: p.name, position: p.position, number: i + 1, role: roleOf(p.id) })),
   };
 }
 
@@ -131,6 +147,8 @@ export interface MatchSimOptions {
   decisionEngine: DecisionEngine;
   /** Sim-clock seconds per real second. Defaults to config.simSpeed; UNPACED_SPEED or above runs as fast as possible. */
   simSpeed?: number;
+  /** For live matches: the pace right now, if it can be changed mid-match (e.g. switched to real time). */
+  liveSpeed?: () => number;
 }
 
 class MatchSim {
@@ -233,18 +251,24 @@ class MatchSim {
   private clockRunning(): boolean {
     if (this.afterSiren) return false;
     if (this.phase.kind === "dead") return false;
-    if (this.phase.kind === "stoppage" && this.phase.type !== "ballUp") return false;
+    // Time off from the umpire's whistle until the ball is bounced or thrown up (AFL rules stop the clock at every
+    // ball-up, throw-in and centre bounce).
+    if (this.phase.kind === "stoppage") return false;
     return true;
+  }
+
+  private roleOf(playerId: string): string {
+    return this.players.find((p) => p.player.id === playerId)?.slot.abbr ?? "";
   }
 
   startEvent(simSpeed: number): MatchEvent {
     return {
       kind: "matchStart",
       matchId: this.opts.matchId,
-      home: teamSummary(this.opts.home),
-      away: teamSummary(this.opts.away),
+      home: teamSummary(this.opts.home, (id) => this.roleOf(id)),
+      away: teamSummary(this.opts.away, (id) => this.roleOf(id)),
       simSpeed,
-      frameInterval: FRAME_INTERVAL,
+      frameInterval: frameIntervalFor(simSpeed),
     };
   }
 
@@ -302,6 +326,14 @@ class MatchSim {
       attackDirOf: (team) => this.attackDir(team),
       overrides,
     });
+    const kickIn = this.kickInUnderway();
+    if (kickIn) {
+      // Nobody from the opposition may stand in the goal square for a kick-in — the man on the mark included.
+      for (const p of this.teams[kickIn.team === 0 ? 1 : 0]) {
+        const target = targets.get(p);
+        if (target) targets.set(p, { pos: this.routeAroundGoalSquare(p.pos, target.pos, kickIn.end), sprint: target.sprint });
+      }
+    }
     integrate(this.players, targets, DT, this.t, carrier);
 
     if (carrier) {
@@ -318,6 +350,38 @@ class MatchSim {
       this.remaining -= DT;
       if (this.remaining <= 0) this.handleSiren();
     }
+  }
+
+  /** The end and kicking team while a kick-in is being set up or taken (until it's kicked or the kicker plays on). */
+  private kickInUnderway(): { end: 1 | -1; team: 0 | 1 } | null {
+    const ph = this.phase;
+    if (ph.kind === "dead") return ph.kickIn ?? null;
+    if (ph.kind === "possession" && ph.isKickIn && ph.protectedPossession && ph.markSpot) {
+      return { end: (Math.sign(ph.markSpot.x) || 1) as 1 | -1, team: ph.carrier.team };
+    }
+    return null;
+  }
+
+  /**
+   * Keeps an opposition player out of the goal square at a kick-in: anyone inside heads straight out, and anyone whose
+   * path would cut across it goes round the front corner instead.
+   */
+  private routeAroundGoalSquare(from: Vec2, to: Vec2, end: 1 | -1): Vec2 {
+    if (isInGoalSquare(from, end)) return outsideGoalSquare(from, end, 1.5);
+    const target = outsideGoalSquare(to, end, 1);
+    for (let i = 1; i <= 8; i++) {
+      const f = i / 8;
+      if (isInGoalSquare({ x: from.x + (target.x - from.x) * f, y: from.y + (target.y - from.y) * f }, end, 0.5)) {
+        const side = Math.sign(from.y) || 1;
+        return { x: end * (GOAL_LINE_X - GOAL_SQUARE_DEPTH - 1.5), y: side * (GOAL_HALF_WIDTH + 1.5) };
+      }
+    }
+    return target;
+  }
+
+  /** Where the man on the mark stands for a kick-in: just outside the top of the goal square, in line with the kicker. */
+  private kickInMarkSpot(end: 1 | -1, kicker: Vec2): Vec2 {
+    return { x: end * (GOAL_LINE_X - GOAL_SQUARE_DEPTH - 1), y: Math.max(-GOAL_HALF_WIDTH, Math.min(GOAL_HALF_WIDTH, kicker.y)) };
   }
 
   private moveMode(): MoveMode {
@@ -483,6 +547,7 @@ class MatchSim {
   // --- possession ---
 
   private startPossession(p: SimPlayer, opts: { protectedPossession: boolean; markSpot?: Vec2; kickIn?: boolean }) {
+    p.lastPossessionAt = this.t;
     this.ball.state = "held";
     this.ball.lastTouchTeam = p.team;
     this.ball.lastKicker = null;
@@ -494,8 +559,11 @@ class MatchSim {
       since: this.t,
       protectedPossession: opts.protectedPossession,
       markSpot,
-      manOnMark: markSpot && !opts.kickIn ? this.nearestTo(this.opponentsOf(p.team), markSpot) : null,
+      manOnMark: markSpot
+        ? this.nearestTo(this.opponentsOf(p.team), opts.kickIn ? this.kickInMarkSpot((Math.sign(markSpot.x) || 1) as 1 | -1, markSpot) : markSpot)
+        : null,
       isKickIn: opts.kickIn ?? false,
+      steadyAt: this.t + 0.6 + Math.random() * 0.6 - 0.2 * norm(p.player.attributes.decisionMaking),
       priorOpportunity: false,
       running: false,
       decision: null,
@@ -526,7 +594,7 @@ class MatchSim {
     const range = kickRange(c.player.attributes.kicking);
     const openAhead = mates.filter((m) => {
       const d = dist(m.pos, c.pos);
-      return (m.pos.x - c.pos.x) * dir > 5 && d > 15 && d < range && this.nearestOpponentDistance(m) > 4;
+      return (m.pos.x - c.pos.x) * dir > 5 && d > 15 && d < range && this.nearestOpponentDistance(m) > 6;
     });
     return {
       playerId: c.player.id,
@@ -547,13 +615,14 @@ class MatchSim {
 
   private reactionTime(choice: DisposalChoice, ph: PossessionPhase): number {
     if (ph.protectedPossession) {
-      if (choice === "shootForGoal") return 22 + Math.random() * 7; // set-shot routine, inside the 30-second limit
-      if (ph.isKickIn) return 5 + Math.random() * 4;
-      return 4.5 + Math.random() * 5; // back to the mark, look for options
+      if (choice === "shootForGoal") return 15 + Math.random() * 10; // back to the mark and the set-shot routine
+      if (ph.isKickIn) return 2 + Math.random() * 2;
+      // Step back off the mark and hit a target: straight away if one's open, otherwise wait a moment for a lead.
+      return this.disposalContext(ph).openTeammatesAhead > 0 ? 3 + Math.random() * 3 : 5 + Math.random() * 3;
     }
     // Unpressured players take their time to look for options; under pressure they get rid of it.
-    const base = choice === "handball" ? 0.6 + Math.random() * 0.6 : 2 + Math.random() * 2;
-    return this.nearestOpponentDistance(ph.carrier) < 3 ? base * 0.35 : base;
+    const base = choice === "handball" ? 0.9 + Math.random() * 0.9 : 2.5 + Math.random() * 2;
+    return this.nearestOpponentDistance(ph.carrier) < 3 ? base * 0.5 : base;
   }
 
   private async tickPossession(ph: PossessionPhase, overrides: Map<SimPlayer, MoveTarget>) {
@@ -612,8 +681,8 @@ class MatchSim {
     }
 
     // Seeing an opponent bearing down, a player gets rid of it early rather than wait to steady.
-    const hurried = !ph.protectedPossession && this.t - ph.decidedAt >= 0.15 && this.nearestOpponentDistance(c) < 4.5;
-    if ((this.t >= ph.executeAt || hurried) && ph.exec) {
+    const hurried = !ph.protectedPossession && this.t >= ph.steadyAt && this.nearestOpponentDistance(c) < 3;
+    if ((this.t >= Math.max(ph.executeAt, ph.steadyAt) || hurried) && ph.exec) {
       const q = await ph.exec.poll(this.t, Math.max(0, ph.executeAt - ph.exec.startedAt) + 0.8, this.unpaced);
       if (q) this.executeDisposal(ph, ph.choice, hurried && this.t < ph.executeAt ? q.quality * 0.85 : q.quality);
     }
@@ -627,7 +696,10 @@ class MatchSim {
       const back = unit(goal, ph.markSpot);
       const spot = clampInside({ x: ph.markSpot.x + back.x * (settingUp ? 5 : 1.5), y: ph.markSpot.y + back.y * (settingUp ? 5 : 1.5) }, 1);
       overrides.set(c, { pos: spot, sprint: false });
-      if (ph.manOnMark) overrides.set(ph.manOnMark, { pos: ph.markSpot, sprint: true });
+      if (ph.manOnMark) {
+        const mark = ph.isKickIn ? this.kickInMarkSpot((Math.sign(ph.markSpot.x) || 1) as 1 | -1, c.pos) : ph.markSpot;
+        overrides.set(ph.manOnMark, { pos: mark, sprint: true });
+      }
       return;
     }
 
@@ -662,23 +734,37 @@ class MatchSim {
     if (!tackler) return false;
     tackler.tackleCooldownUntil = this.t + 2;
 
+    // A player who's only just won the ball often slips the first tackle and gets it moving. Without this, nearly
+    // every contested pickup was an instant tackle and yet another scramble.
+    if (this.t - ph.since < 0.8 && Math.random() < 0.55) return false;
+
     if (Math.random() < 0.03) {
-      this.emit({ kind: "freeKick", playerId: c.player.id, teamId: this.teamIds[c.team], reason: "high tackle" });
+      this.emit({ kind: "freeKick", playerId: c.player.id, teamId: this.teamIds[c.team], reason: "high tackle", againstPlayerId: tackler.player.id });
       this.startPossession(c, { protectedPossession: true, markSpot: { ...c.pos } });
       return true;
     }
 
     const a = norm(tackler.player.attributes.tackling) + 0.3;
     const d = norm(c.player.attributes.speed) * 0.55 + norm(c.player.attributes.decisionMaking) * 0.25;
-    const sticks = Math.random() < a / (a + d);
+    // Plenty of tackles are only half-laid — a fend, a spin, a shrug — and the carrier stays up.
+    const sticks = Math.random() < 0.65 * (a / (a + d));
     const teamId = this.teamIds[tackler.team];
 
     if (!sticks) {
+      // Missed: the tackler dives and ends up on the turf.
       this.emit({ kind: "tackle", playerId: tackler.player.id, teamId, opponentId: c.player.id, outcome: "broken" });
-      tackler.stunnedUntil = this.t + 1;
+      tackler.stunnedUntil = this.t + 1.1;
       ph.priorOpportunity = true;
       return false;
     }
+
+    // The tackle lands: the two come together and both go to ground for a moment.
+    const push = unit(tackler.pos, c.pos);
+    tackler.pos = { x: c.pos.x - push.x * 0.55, y: c.pos.y - push.y * 0.55 };
+    tackler.vel = { x: 0, y: 0 };
+    c.vel = { x: 0, y: 0 };
+    tackler.stunnedUntil = this.t + 1.2;
+    c.stunnedUntil = this.t + 1.2;
 
     const prior = ph.priorOpportunity || this.t - ph.since > 1.8;
     const r = Math.random();
@@ -701,20 +787,16 @@ class MatchSim {
     switch (outcome) {
       case "holdingTheBall":
         c.stunnedUntil = this.t + 1.5;
-        this.emit({ kind: "freeKick", playerId: tackler.player.id, teamId, reason: "holding the ball" });
+        this.emit({ kind: "freeKick", playerId: tackler.player.id, teamId, reason: "holding the ball", againstPlayerId: c.player.id });
         this.startPossession(tackler, { protectedPossession: true, markSpot: { ...tackler.pos } });
         break;
       case "handballOut":
-        c.stunnedUntil = this.t + 0.8;
         this.executeDisposal(ph, "handball", 0.25 + Math.random() * 0.3, outlet!);
         break;
       case "ballUp":
-        c.stunnedUntil = this.t + 0.6;
-        tackler.stunnedUntil = this.t + 0.6;
         this.startStoppage("ballUp", c.pos);
         break;
       case "dispossessed": {
-        c.stunnedUntil = this.t + 1;
         const spill = unit({ x: 0, y: 0 }, { x: randomJitter(1), y: randomJitter(1) });
         Object.assign(this.ball, { vx: spill.x * 3, vy: spill.y * 3, vz: 1, z: 0.8, state: "ground" as const });
         this.ball.lastTouchTeam = c.team;
@@ -735,17 +817,46 @@ class MatchSim {
       const d = dist(m.pos, c.pos);
       const ahead = (m.pos.x - c.pos.x) * dir;
       const open = Math.min(10, this.nearestOpponentDistance(m));
-      const leading = m.leadTarget && this.t < m.leadUntil ? 3 : 0;
+      const leading = m.leadTarget && this.t < m.leadUntil ? 1.5 : 0;
+      // A player who's just had it is usually still getting into position; look elsewhere first.
+      const recent = this.t - m.lastPossessionAt < 8 ? 4 : 0;
+      // Teams kick to their outside runners and leading forwards; inside midfielders win it in close and dish it off.
+      const role = m.slot.abbr;
+      const outlet =
+        choice === "handball"
+          ? 0
+          : role === "HBF"
+            ? 2.5
+            : ["W", "BP", "CHB"].includes(role)
+              ? 1
+              : ["C", "RO", "RR"].includes(role)
+                ? -9
+                : role === "R"
+                  ? -3
+                  : 0;
       let score: number | null = null;
       // Short kicks only go to someone genuinely free; long kicks can go to a contest but still favour space.
-      if (choice === "handball" && d >= 2 && d <= 16) score = open * 1.2 - Math.abs(d - 8) * 0.3 + ahead * 0.15;
-      else if (choice === "kickShort" && d >= 15 && d <= Math.min(45, range) && open >= 3) score = open * 1.5 + ahead * 0.35 - Math.abs(d - 28) * 0.1 + leading;
+      // Handballs go to a runner in space — dishing it to someone with an opponent on top of them just hands it over.
+      if (choice === "handball" && d >= 2 && d <= 16 && open >= 3) score = open * 1.2 - Math.abs(d - 8) * 0.3 + ahead * 0.15;
+      // Kicking backwards to an open teammate throws away ground; players go forward or at most sideways.
+      else if (choice === "kickShort" && d >= 15 && d <= Math.min(45, range) && open >= 5)
+        score = open * 1.5 + ahead * (ahead < 0 ? 0.6 : 0.2) - Math.abs(d - 28) * 0.1 + leading;
       else if (choice === "kickLong" && d >= 30 && d <= range && ahead > 15) score = ahead * 0.4 + open * 1.0 + leading;
-      if (score !== null) scored.push({ p: m, score });
+      if (score !== null) scored.push({ p: m, score: score - recent + outlet });
     }
     scored.sort((x, y) => y.score - x.score);
-    const top = scored.slice(0, 2);
-    return top.length ? top[Math.floor(Math.random() * top.length)].p : null;
+    const best = scored[0];
+    // If every option is poor, a kick goes to space instead of forcing it to someone.
+    if (!best || (choice !== "handball" && best.score < -5)) return null;
+    // Otherwise choose in proportion to how good each option is, so the ball spreads across the team the way real
+    // passing does, rather than always finding the single best-placed player.
+    const weights = scored.map((s) => Math.exp((s.score - best.score) / 2.5));
+    let roll = Math.random() * weights.reduce((sum, w) => sum + w, 0);
+    for (let i = 0; i < scored.length; i++) {
+      roll -= weights[i];
+      if (roll <= 0) return scored[i].p;
+    }
+    return best.p;
   }
 
   private executeDisposal(ph: PossessionPhase, choice: DisposalChoice, quality: number, forcedTarget?: SimPlayer) {
@@ -754,6 +865,15 @@ class MatchSim {
     const from = { x: c.pos.x, y: c.pos.y };
     const nearestOpp = this.nearestOpponentDistance(c);
     const pressure = ph.protectedPossession ? 0 : nearestOpp < 2 ? 0.8 : nearestOpp < 5 ? 0.4 : 0;
+
+    // Before going long, a player with time has one more look: a teammate who's since led into space gets it instead.
+    if (choice === "kickLong" && !forcedTarget && (ph.protectedPossession || nearestOpp > 5) && Math.random() < 0.8) {
+      const lead = this.pickPassTarget(c, "kickShort");
+      if (lead) {
+        choice = "kickShort";
+        forcedTarget = lead;
+      }
+    }
 
     let plan: FlightPlan;
     let target: SimPlayer | null = null;
@@ -770,13 +890,14 @@ class MatchSim {
       let aim: Vec2;
       if (target) {
         // Lead the receiver: kick to where they're running, not where they are.
-        const lead = type === "kick" ? (0.55 + dist(from, target.pos) / 21) * 0.7 : 0.2;
+        const lead = type === "kick" ? (0.3 + dist(from, target.pos) / 24) * 0.7 : 0.2;
         aim = { x: target.pos.x + target.vel.x * lead, y: target.pos.y + target.vel.y * lead };
       } else {
         const len = choice === "handball" ? 8 : choice === "kickShort" ? 30 : 50;
         aim = clampInside({ x: from.x + dir * len, y: from.y * 0.8 }, 5);
       }
-      plan = planPass(from, aim, type, quality, c.player.attributes.kicking);
+      // Long kicks go up high for a contest; passes to a teammate are driven flatter.
+      plan = planPass(from, aim, type, quality, c.player.attributes.kicking, choice === "kickLong");
     }
 
     const distance = dist(from, plan.to);
@@ -805,7 +926,7 @@ class MatchSim {
     this.ball.untouchedSinceKick = type === "kick";
     this.ball.vx = (plan.to.x - from.x) / plan.T;
     this.ball.vy = (plan.to.y - from.y) / plan.T;
-    c.stunnedUntil = this.t + 0.3;
+    c.stunnedUntil = Math.max(c.stunnedUntil, this.t + 0.3); // follow-through, without cutting short a tackle
 
     const predictedDefender = type === "kick" ? this.nearestTo(this.opponentsOf(c.team), plan.to) : null;
     let markDecision: AsyncDecision<Outcome> | null = null;
@@ -844,14 +965,27 @@ class MatchSim {
     this.ball.z = flightHeight(ph.plan, tau);
 
     const land = ph.plan.to;
-    if (ph.target) overrides.set(ph.target, { pos: land, sprint: true });
+    if (ph.target) {
+      overrides.set(ph.target, { pos: land, sprint: true });
+      if (ph.type === "kick") {
+        // The nearest defender reads the kick and closes on the lead to spoil or crash the contest.
+        const closer = this.nearestTo(
+          this.opponentsOf(ph.kicker.team).filter((p) => !overrides.has(p) && p.stunnedUntil <= this.t),
+          land,
+        );
+        if (closer && dist(closer.pos, land) < 10) overrides.set(closer, { pos: land, sprint: true });
+      }
+    }
     if (ph.type === "kick" && (ph.intent === "kickLong" || !ph.target)) {
       // Long bombs bring players from both sides to where it'll come down, forming a marking pack.
       // Shorter kicks to a leading target are left to the target and whoever's checking them.
       const packSize = ph.distance > 40 ? 2 : 1;
       for (const team of this.teams) {
+        const kickingSide = team === this.teams[ph.kicker.team];
         team
+          // The kicking side's onballers stay in the corridor unless the ball's dropping right on them.
           .filter((p) => p !== ph.kicker && !overrides.has(p))
+          .filter((p) => !kickingSide || !["C", "RO", "RR"].includes(p.slot.abbr) || dist(p.pos, land) < 8)
           .sort((a, b) => dist(a.pos, land) - dist(b.pos, land))
           .slice(0, packSize)
           .forEach((p) => {
@@ -885,11 +1019,12 @@ class MatchSim {
     const near = this.players
       .filter((p) => p !== ph.kicker && p.stunnedUntil <= this.t && dist(p.pos, land) < radius)
       .sort((a, b) => dist(a.pos, land) - dist(b.pos, land));
-    const a = near.find((p) => p.team === ph.kicker.team);
+    // The player it was kicked to has first claim if they got there; otherwise whichever teammate is closest.
+    const a = (ph.target && near.includes(ph.target) ? ph.target : undefined) ?? near.find((p) => p.team === ph.kicker.team);
     // A defender has to be right there, and level with the attacker, to genuinely contest; otherwise they can only
     // intercept if nobody from the kicking side got there.
     const d = a
-      ? near.find((p) => p.team !== ph.kicker.team && dist(p.pos, land) < Math.min(1.3, dist(a.pos, land) + 0.8))
+      ? near.find((p) => p.team !== ph.kicker.team && dist(p.pos, land) < Math.min(2.4, dist(a.pos, land) + 1.4))
       : near.find((p) => p.team !== ph.kicker.team);
 
     if (ph.type === "handball") {
@@ -905,14 +1040,24 @@ class MatchSim {
     const markable = ph.distance >= 15;
     const catchFor = (p: SimPlayer, contested: boolean, intercept: boolean) => {
       if (!markable) return this.startPossession(p, { protectedPossession: false });
-      this.emit({ kind: "mark", playerId: p.player.id, teamId: this.teamIds[p.team], contested, intercept });
+      const dir = this.attackDir(p.team);
+      this.emit({
+        kind: "mark",
+        playerId: p.player.id,
+        teamId: this.teamIds[p.team],
+        contested,
+        intercept,
+        distanceToGoal: Math.round(distanceToGoal(land, dir)),
+        angleToGoalDeg: Math.round(angleToGoalDeg(land, dir)),
+        inScoringRange: this.inScoringRange(p, true),
+      });
       this.startPossession(p, { protectedPossession: true, markSpot: { x: land.x, y: land.y } });
     };
 
     if (!a && !d) return this.dropToGround(ph, 0.4);
 
     if (a && !d) {
-      const p = 0.75 + 0.18 * norm(a.player.attributes.marking) - (ph.quality < 0.35 ? 0.15 : 0);
+      const p = 0.76 + 0.2 * norm(a.player.attributes.marking) - (ph.quality < 0.35 ? 0.15 : 0);
       if (Math.random() < p) return catchFor(a, false, false);
       this.emit({ kind: "droppedMark", playerId: a.player.id });
       return this.dropToGround(ph, 0.15);
@@ -937,6 +1082,7 @@ class MatchSim {
         playerId: receiver.player.id,
         teamId: this.teamIds[receiver.team],
         reason: toAttacker ? "in the back" : "holding the man",
+        againstPlayerId: (toAttacker ? d : a).player.id,
       });
       return this.startPossession(receiver, { protectedPossession: true, markSpot: { x: land.x, y: land.y } });
     }
@@ -949,13 +1095,13 @@ class MatchSim {
 
     if (outcome.success) {
       // Winning the contest means getting hands to it; holding a contested mark under a body is another matter.
-      if (Math.random() < (0.3 + 0.25 * norm(a.player.attributes.marking)) * packFactor) return catchFor(a, true, false);
+      if (Math.random() < (0.1 + 0.12 * norm(a.player.attributes.marking)) * packFactor) return catchFor(a, true, false);
       this.emit({ kind: "droppedMark", playerId: a.player.id });
       return this.dropToGround(ph, 0.1);
     }
     // Defenders mostly just need to spoil; taking it cleanly is a bonus.
     const r = Math.random();
-    if (r < 0.75) {
+    if (r < 0.6) {
       this.emit({ kind: "spoil", playerId: d.player.id, opponentId: a.player.id });
       const punch = unit({ x: 0, y: 0 }, { x: randomJitter(1), y: randomJitter(1) });
       const speed = 5 + Math.random() * 4;
@@ -965,15 +1111,18 @@ class MatchSim {
       this.phase = { kind: "loose", since: this.t, congestionSince: null };
       return;
     }
-    if (r < 0.8 + 0.1 * packFactor) return catchFor(d, true, true);
+    if (r < 0.7 + 0.15 * packFactor) return catchFor(d, true, true);
     this.emit({ kind: "droppedMark", playerId: a.player.id });
     this.dropToGround(ph, 0.1);
   }
 
   private dropToGround(ph: FlightPhase, carry: number) {
-    this.ball.vx = ((ph.plan.to.x - ph.from.x) / ph.plan.T) * carry;
-    this.ball.vy = ((ph.plan.to.y - ph.from.y) / ph.plan.T) * carry;
-    this.ball.vz = -3;
+    // Spilled or missed, the ball carries on a little and pops off hands and bodies at an odd angle.
+    const deflect = unit({ x: 0, y: 0 }, { x: randomJitter(1), y: randomJitter(1) });
+    const pop = 2 + Math.random() * 4;
+    this.ball.vx = ((ph.plan.to.x - ph.from.x) / ph.plan.T) * carry + deflect.x * pop;
+    this.ball.vy = ((ph.plan.to.y - ph.from.y) / ph.plan.T) * carry + deflect.y * pop;
+    this.ball.vz = 1 + Math.random() * 2;
     this.ball.state = "ground";
     this.phase = { kind: "loose", since: this.t, congestionSince: null };
   }
@@ -996,8 +1145,8 @@ class MatchSim {
       } else {
         b.vz = 0;
       }
-      b.vx *= 1 - 1.4 * DT;
-      b.vy *= 1 - 1.4 * DT;
+      b.vx *= 1 - 1.0 * DT;
+      b.vy *= 1 - 1.0 * DT;
     }
     b.x += b.vx * DT;
     b.y += b.vy * DT;
@@ -1010,7 +1159,7 @@ class MatchSim {
     const ballPos = { x: b.x, y: b.y };
     if (b.z < 1.3) {
       const candidates = this.players
-        .filter((p) => p.stunnedUntil <= this.t && p.pickupCooldownUntil <= this.t && dist(p.pos, ballPos) < 1.3)
+        .filter((p) => p.stunnedUntil <= this.t && p.pickupCooldownUntil <= this.t && dist(p.pos, ballPos) < 1.0)
         .sort((x, y) => dist(x.pos, ballPos) - dist(y.pos, ballPos));
       const first = candidates[0];
       if (first) {
@@ -1021,16 +1170,20 @@ class MatchSim {
           const ra = norm(rival.player.attributes.speed) + norm(rival.player.attributes.handballing) + 0.3;
           winner = Math.random() < fa / (fa + ra) ? first : rival;
         }
-        const clean = 0.65 + 0.3 * norm((winner.player.attributes.handballing + winner.player.attributes.decisionMaking) / 2) - (rival ? 0.15 : 0);
+        // Ground balls are messy: a lone player usually picks it up, but with an opponent on top of them it's a scramble.
+        const skill = norm((winner.player.attributes.handballing + winner.player.attributes.decisionMaking) / 2);
+        // A skidding or bouncing ball is much harder to take cleanly than one that's sitting up.
+        const moving = Math.hypot(b.vx, b.vy) > 3 || b.z > 0.6 ? 0.6 : 1;
+        const clean = (rival ? 0.2 + 0.25 * skill : 0.6 + 0.3 * skill) * moving;
         if (Math.random() < clean) {
           this.gather(winner);
           return;
         }
         // Fumbled — knocked on a little way.
-        winner.pickupCooldownUntil = this.t + 0.6;
+        winner.pickupCooldownUntil = this.t + 1;
         const knock = unit({ x: 0, y: 0 }, { x: randomJitter(1), y: randomJitter(1) });
-        b.vx = knock.x * (2 + Math.random() * 2);
-        b.vy = knock.y * (2 + Math.random() * 2);
+        b.vx = knock.x * (3 + Math.random() * 3);
+        b.vy = knock.y * (3 + Math.random() * 3);
         b.lastTouchTeam = winner.team;
         b.untouchedSinceKick = false;
       }
@@ -1040,7 +1193,7 @@ class MatchSim {
     const packed = ([0, 1] as const).every((team) => this.teams[team].filter((p) => dist(p.pos, ballPos) < 4).length >= 2);
     if (packed) ph.congestionSince ??= this.t;
     else ph.congestionSince = null;
-    if ((ph.congestionSince !== null && this.t - ph.congestionSince >= 2.5) || this.t - ph.since > 10) {
+    if ((ph.congestionSince !== null && this.t - ph.congestionSince >= 3.5) || this.t - ph.since > 12) {
       this.startStoppage("ballUp", ballPos);
     }
   }
@@ -1102,13 +1255,20 @@ class MatchSim {
         });
       }
       const taker = this.nearestTo(this.opponentsOf(lastTeam), spot) ?? this.opponentsOf(lastTeam)[0];
+      const offender = flight.kicker;
       this.placeBall(spot, 0.5);
       this.phase = {
         kind: "dead",
         until: this.t + 4,
         targets: new Map([[taker, { pos: spot, sprint: true }]]),
         next: () => {
-          this.emit({ kind: "freeKick", playerId: taker.player.id, teamId: this.teamIds[taker.team], reason: "out on the full" });
+          this.emit({
+            kind: "freeKick",
+            playerId: taker.player.id,
+            teamId: this.teamIds[taker.team],
+            reason: "out on the full",
+            againstPlayerId: offender.player.id,
+          });
           taker.pos = { ...spot };
           this.startPossession(taker, { protectedPossession: true, markSpot: spot });
         },
@@ -1145,16 +1305,18 @@ class MatchSim {
 
   private afterBehind(defendingTeam: 0 | 1) {
     const ownEnd = (this.attackDir(defendingTeam) * -1) as 1 | -1;
-    const spot = { x: ownEnd * 84, y: 0 };
+    const spot = { x: ownEnd * (GOAL_LINE_X - 5), y: 0 };
     this.placeBall(spot, 0.5);
+    // Whichever defender is closest takes the kick-in, not always the full back.
     const kicker =
-      this.teams[defendingTeam].find((p) => p.slot.name === "Full back") ??
+      this.nearestTo(this.teams[defendingTeam].filter((p) => p.slot.line === "back"), spot) ??
       this.nearestTo(this.teams[defendingTeam], spot) ??
       this.teams[defendingTeam][0];
     this.phase = {
       kind: "dead",
-      until: this.t + 7,
+      until: this.t + 4,
       targets: new Map([[kicker, { pos: spot, sprint: true }]]),
+      kickIn: { end: ownEnd, team: defendingTeam },
       next: () => {
         kicker.pos = { ...spot };
         this.emit({ kind: "kickIn", teamId: this.teamIds[defendingTeam], playerId: kicker.player.id });
@@ -1169,18 +1331,28 @@ export async function* simulateMatch(opts: MatchSimOptions): AsyncGenerator<Matc
   const simSpeed = opts.simSpeed ?? config.simSpeed;
   const unpaced = simSpeed >= UNPACED_SPEED;
   const sim = new MatchSim(opts, unpaced);
-  yield sim.startEvent(simSpeed);
+  let pace = opts.liveSpeed?.() ?? simSpeed;
+  yield sim.startEvent(unpaced ? simSpeed : pace);
 
   let nextFrameAt = 0;
   let realOrigin = performance.now();
+  let simOrigin = 0;
   while (!sim.finished) {
     await sim.step();
     yield* sim.drain();
-    if (sim.t >= nextFrameAt) {
-      nextFrameAt += FRAME_INTERVAL;
+    // (with a hair of tolerance, so float drift in the 0.1s ticks never skips a frame)
+    if (sim.t + 1e-6 >= nextFrameAt) {
+      nextFrameAt += frameIntervalFor(unpaced ? simSpeed : pace);
       yield { kind: "frame", frame: sim.frame() };
       if (!unpaced) {
-        const wait = realOrigin + (sim.t / simSpeed) * 1000 - performance.now();
+        const nowPace = opts.liveSpeed?.() ?? simSpeed;
+        if (nowPace !== pace) {
+          // The pace changed mid-match: carry on from here at the new rate.
+          pace = nowPace;
+          simOrigin = sim.t;
+          realOrigin = performance.now();
+        }
+        const wait = realOrigin + ((sim.t - simOrigin) / pace) * 1000 - performance.now();
         if (wait > 0) await sleep(wait);
         // If we fell well behind (e.g. a slow decision), don't fast-forward to catch up — just carry on from here.
         else if (wait < -250) realOrigin -= wait;

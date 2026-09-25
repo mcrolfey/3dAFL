@@ -1,19 +1,6 @@
-import type { MatchEvent } from "@3dafl/shared";
+import type { MatchEvent, PlayerStatLine } from "@3dafl/shared";
 
-export interface PlayerMatchStats {
-  kicks: number;
-  handballs: number;
-  disposals: number;
-  marks: number;
-  contestedMarks: number;
-  tackles: number;
-  goals: number;
-  behinds: number;
-  hitouts: number;
-  clearances: number;
-  insideFifties: number;
-  freesFor: number;
-}
+export type PlayerMatchStats = PlayerStatLine;
 
 export interface TeamMatchStats extends PlayerMatchStats {
   shots: number;
@@ -34,6 +21,7 @@ function emptyPlayerStats(): PlayerMatchStats {
     clearances: 0,
     insideFifties: 0,
     freesFor: 0,
+    freesAgainst: 0,
   };
 }
 
@@ -71,6 +59,7 @@ function credit(event: MatchEvent, get: (id: string) => PlayerMatchStats) {
       break;
     case "freeKick":
       get(event.playerId).freesFor++;
+      if (event.againstPlayerId) get(event.againstPlayerId).freesAgainst++;
       break;
   }
 }

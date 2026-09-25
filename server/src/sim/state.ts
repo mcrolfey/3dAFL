@@ -18,6 +18,8 @@ export interface SimPlayer {
   sprintSpeed: number;
   /** can't contest or pick up until this sim time (after being tackled, fumbling, etc.) */
   stunnedUntil: number;
+  /** when they last had the ball — recent possession makes them less likely to be the next receiver */
+  lastPossessionAt: number;
   tackleCooldownUntil: number;
   pickupCooldownUntil: number;
   /** forwards periodically lead toward the ball carrier to present as a target */
@@ -37,8 +39,9 @@ export function createSimPlayer(idx: number, player: Player, team: 0 | 1, slot: 
     pos: { ...pos },
     vel: { x: 0, y: 0 },
     fatigue: 0,
-    sprintSpeed: 6.6 + 2.4 * norm(player.attributes.speed),
+    sprintSpeed: 6.4 + 2.2 * norm(player.attributes.speed),
     stunnedUntil: 0,
+    lastPossessionAt: -Infinity,
     tackleCooldownUntil: 0,
     pickupCooldownUntil: 0,
     leadTarget: null,

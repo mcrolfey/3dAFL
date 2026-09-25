@@ -6,6 +6,8 @@ export type Line = "back" | "centre" | "forward";
 /** A named on-field position, expressed for a team attacking toward +x. */
 export interface Slot {
   name: string;
+  /** team-sheet abbreviation */
+  abbr: string;
   line: Line;
   x: number;
   y: number;
@@ -14,30 +16,30 @@ export interface Slot {
 // Mirrored so each back-line slot lines up with the opposition's matching forward slot.
 // All back/forward slots sit inside the 50m arcs at centre bounces (the 6-6-6 rule).
 const BACK: Slot[] = [
-  { name: "Full back", line: "back", x: -76, y: 0 },
-  { name: "Back pocket", line: "back", x: -70, y: -18 },
-  { name: "Back pocket", line: "back", x: -70, y: 18 },
-  { name: "Centre half-back", line: "back", x: -46, y: 0 },
-  { name: "Half-back flank", line: "back", x: -50, y: -24 },
-  { name: "Half-back flank", line: "back", x: -50, y: 24 },
+  { name: "Full back", abbr: "FB", line: "back", x: -76, y: 0 },
+  { name: "Back pocket", abbr: "BP", line: "back", x: -70, y: -18 },
+  { name: "Back pocket", abbr: "BP", line: "back", x: -70, y: 18 },
+  { name: "Centre half-back", abbr: "CHB", line: "back", x: -46, y: 0 },
+  { name: "Half-back flank", abbr: "HBF", line: "back", x: -50, y: -24 },
+  { name: "Half-back flank", abbr: "HBF", line: "back", x: -50, y: 24 },
 ];
 
 const CENTRE: Slot[] = [
-  { name: "Ruck", line: "centre", x: -1.5, y: 0 },
-  { name: "Rover", line: "centre", x: -6, y: 6 },
-  { name: "Ruck-rover", line: "centre", x: -6, y: -6 },
-  { name: "Centre", line: "centre", x: -10, y: 0 },
-  { name: "Wing", line: "centre", x: 0, y: -42 },
-  { name: "Wing", line: "centre", x: 0, y: 42 },
+  { name: "Ruck", abbr: "R", line: "centre", x: -1.5, y: 0 },
+  { name: "Rover", abbr: "RO", line: "centre", x: -6, y: 6 },
+  { name: "Ruck-rover", abbr: "RR", line: "centre", x: -6, y: -6 },
+  { name: "Centre", abbr: "C", line: "centre", x: -10, y: 0 },
+  { name: "Wing", abbr: "W", line: "centre", x: 0, y: -42 },
+  { name: "Wing", abbr: "W", line: "centre", x: 0, y: 42 },
 ];
 
 const FORWARD: Slot[] = [
-  { name: "Full forward", line: "forward", x: 76, y: 0 },
-  { name: "Forward pocket", line: "forward", x: 70, y: -18 },
-  { name: "Forward pocket", line: "forward", x: 70, y: 18 },
-  { name: "Centre half-forward", line: "forward", x: 46, y: 0 },
-  { name: "Half-forward flank", line: "forward", x: 50, y: -24 },
-  { name: "Half-forward flank", line: "forward", x: 50, y: 24 },
+  { name: "Full forward", abbr: "FF", line: "forward", x: 76, y: 0 },
+  { name: "Forward pocket", abbr: "FP", line: "forward", x: 70, y: -18 },
+  { name: "Forward pocket", abbr: "FP", line: "forward", x: 70, y: 18 },
+  { name: "Centre half-forward", abbr: "CHF", line: "forward", x: 46, y: 0 },
+  { name: "Half-forward flank", abbr: "HFF", line: "forward", x: 50, y: -24 },
+  { name: "Half-forward flank", abbr: "HFF", line: "forward", x: 50, y: 24 },
 ];
 
 export const ALL_SLOTS: Slot[] = [...BACK, ...CENTRE, ...FORWARD];

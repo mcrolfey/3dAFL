@@ -48,7 +48,7 @@ export class MatchAudio {
   }
 
   private umpire(text: string) {
-    this.voices.call(text, { volume: 0.75, pitch: 0.9, rate: 1.15, priority: true });
+    this.voices.call(text, { volume: 0.75, pitch: 0.9, rate: 1.15 });
   }
 
   private player(text: string, place: Placement) {

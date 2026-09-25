@@ -49,6 +49,7 @@ const NO_STATS: PlayerMatchStats = {
   clearances: 0,
   insideFifties: 0,
   freesFor: 0,
+  freesAgainst: 0,
 };
 
 export function applyProgressionToTeam(team: Team, statsByPlayer: Map<string, PlayerMatchStats>): Team {

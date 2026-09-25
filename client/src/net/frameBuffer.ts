@@ -21,15 +21,22 @@ export interface SampledFrame {
 export class FrameBuffer {
   private frames: Stamped[] = [];
   private delayMs = 160;
+  private targetDelayMs = 160;
+  private lastSampleAt = 0;
 
   /** How far behind real time playback runs — events should be delayed by this to line up with what's on screen. */
   get delay(): number {
     return this.delayMs;
   }
 
-  configure(frameIntervalSim: number, simSpeed: number) {
+  /**
+   * Sets the playback delay for the frame rate at this pace. `immediate` snaps to it (a new match); otherwise playback
+   * eases over to it, so a pace change mid-match doesn't make everyone jump back or skip ahead.
+   */
+  configure(frameIntervalSim: number, simSpeed: number, immediate = true) {
     const realIntervalMs = (frameIntervalSim / simSpeed) * 1000;
-    this.delayMs = Math.max(80, realIntervalMs * 2.5);
+    this.targetDelayMs = Math.max(80, realIntervalMs * 2.5);
+    if (immediate) this.delayMs = this.targetDelayMs;
   }
 
   reset() {
@@ -43,6 +50,11 @@ export class FrameBuffer {
 
   sample(now: number): SampledFrame | null {
     if (this.frames.length === 0) return null;
+    // Ease toward the target delay, so playback briefly runs somewhere between half and one-and-a-half speed.
+    const elapsed = this.lastSampleAt ? Math.min(100, now - this.lastSampleAt) : 0;
+    this.lastSampleAt = now;
+    const step = elapsed * 0.5;
+    this.delayMs += Math.max(-step, Math.min(step, this.targetDelayMs - this.delayMs));
     const renderAt = now - this.delayMs;
     let i = this.frames.length - 1;
     while (i > 0 && this.frames[i].at > renderAt) i--;

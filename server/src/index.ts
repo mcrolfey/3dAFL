@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import http from "node:http";
+import type { MatchEvent } from "@3dafl/shared";
 import { config } from "./config.js";
 import { loadTeams, loadSeason, saveTeams, saveSeason, resetAll } from "./persistence/store.js";
 import { nextScheduledMatch, recordMatchResult, sortedLadder, startNextSeason } from "./progression/season.js";
@@ -8,6 +9,7 @@ import { applyProgressionToTeam } from "./progression/progression.js";
 import { aggregateMatchStats } from "./progression/stats.js";
 import { createDecisionEngine } from "./jev/index.js";
 import { runMatch } from "./matchRunner.js";
+import { frameIntervalFor } from "./sim/engine.js";
 import { Hub } from "./ws/hub.js";
 
 const app = express();
@@ -22,9 +24,19 @@ const server = http.createServer(app);
 const hub = new Hub(server);
 
 let runningMatchId: string | null = null;
+/** Live match pace in sim seconds per real second: 1 is real time; config.simSpeed is the normal quicker pace. */
+let liveSpeed = config.simSpeed;
+hub.setSpeed(liveSpeed, config.simSpeed, frameIntervalFor(liveSpeed));
 
 app.get("/api/state", (_req, res) => {
-  res.json({ teams, season, ladder: sortedLadder(season), decisionEngine: decisionEngine.name });
+  res.json({
+    teams,
+    season,
+    ladder: sortedLadder(season),
+    decisionEngine: decisionEngine.name,
+    simSpeed: liveSpeed,
+    normalSpeed: config.simSpeed,
+  });
 });
 
 app.get("/api/season", (_req, res) => {
@@ -50,6 +62,18 @@ app.post("/api/season/next", (_req, res) => {
   res.json({ season, ladder: sortedLadder(season) });
 });
 
+/** Switches the live pace (e.g. to real time and back), taking effect immediately, even mid-match. */
+app.post("/api/speed", (req, res) => {
+  const speed = Number(req.body?.simSpeed);
+  if (!Number.isFinite(speed) || speed < 0.25 || speed > 20) {
+    res.status(400).json({ error: "simSpeed must be between 0.25 and 20" });
+    return;
+  }
+  liveSpeed = speed;
+  hub.setSpeed(liveSpeed, config.simSpeed, frameIntervalFor(liveSpeed));
+  res.json({ simSpeed: liveSpeed, normalSpeed: config.simSpeed });
+});
+
 app.post("/api/match/start", (req, res) => {
   if (runningMatchId) {
     res.status(409).json({ error: "A match is already in progress", matchId: runningMatchId });
@@ -73,12 +97,21 @@ app.post("/api/match/start", (req, res) => {
   res.status(202).json({ matchId: scheduled.id, homeTeamId: home.id, awayTeamId: away.id });
   hub.broadcast({ type: "matchStarted", matchId: scheduled.id, homeTeamId: home.id, awayTeamId: away.id });
 
+  // Live box score: tallied from events as they happen and pushed every couple of seconds, so viewers who join
+  // mid-match get the full picture rather than just what they've seen.
+  const liveEvents: MatchEvent[] = [];
+  const broadcastStats = () =>
+    hub.broadcast({ type: "stats", matchId: scheduled.id, players: Object.fromEntries(aggregateMatchStats(liveEvents)) });
+  const statsTimer = setInterval(broadcastStats, 2000);
+
   runMatch({
     matchId: scheduled.id,
     home,
     away,
     decisionEngine,
+    liveSpeed: () => liveSpeed,
     onEvent: (commentatedEvent) => {
+      liveEvents.push(commentatedEvent.event);
       const message = { type: "commentatedEvent" as const, matchId: scheduled.id, payload: commentatedEvent };
       if (commentatedEvent.event.kind === "matchStart") hub.setWelcome(message);
       hub.broadcast(message);
@@ -98,6 +131,8 @@ app.post("/api/match/start", (req, res) => {
       console.error("[match] simulation failed", err);
     })
     .finally(() => {
+      clearInterval(statsTimer);
+      broadcastStats();
       runningMatchId = null;
       hub.setWelcome(null);
     });
